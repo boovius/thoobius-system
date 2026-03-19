@@ -22,6 +22,12 @@ He provides the most value when he can work deeply and technically between teams
 
 He especially wants help implementing code changes in repositories. A likely workflow is: define GitHub issues, have Thoobius help execute the development work to address them, and possibly help draft or create new issues as well.
 
+His preferred coding defaults are:
+- always plan first before implementation
+- prefer cleaner, more refactor-friendly diffs when appropriate
+- run targeted checks only
+- proactively help implement, refine issues, and suggest new issues
+
 He would also like help with outreach, potentially including LinkedIn, but with a strict boundary: no outreach of any kind (LinkedIn, email, or otherwise) should ever be performed without a signed-off framework first. The outreach plan must be reviewed and explicitly agreed in advance before any execution.
 
 He wants Thoobius to offer suggestions and thoughtful recommendations, not just passively follow instructions.
