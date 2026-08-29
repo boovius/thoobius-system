@@ -1,0 +1,5 @@
+# Important Topics to Address with Clara
+
+| Topic | Current Framing | Why It Matters | Hopeful Resolution / Goal | Notes on Tone / Approach |
+|---|---|---|---|---|
+| Carrying capacity / over-burden | Josh feels over-burdened and is carrying more than is sustainable in the relationship. The issue is not just "life is hard," but that the current burden-sharing dynamic is exceeding his carrying capacity. | If left unaddressed, this becomes resentment, protest, pressure, and a distorted relationship dynamic where one person over-functions and the other feels criticized or defended against. | Create better shared language for assessing each person’s carrying capacity, stress load, and what is realistically supportable at a given moment. Build a more team-oriented way of noticing overload before it turns into accusation, shutdown, or collapse. | Present this as a shared systems problem, not a blame problem. Emphasize teamwork, fairness, and mutual care. Clara is likely to get on board when she does not feel threatened or cast as having failed; frame it as "how do we better assess and communicate capacity together?" rather than "you are not carrying enough." |

@@ -1,0 +1,6 @@
+# Kaylee Memory
+
+- 2026-06-02: BELT PR #123 review attempt was blocked before inspection by `Native hook relay unavailable` on local `git`/`gh` commands. Merge readiness remains unknown until the diff and targeted checks can be inspected.
+- 2026-06-02: BELT PR #122 review/patch flow completed earlier. Tank's follow-up review found no blocking issues; low follow-up was missing trace events on some invalid Climatiq response paths.
+- 2026-06-02: BELT PR #123 retry review completed. Architecture/design looks aligned: authenticated owner-filtered scenario updates, canonical `Scenario` parse plus normalized `model_dump(by_alias=True)` persistence, and docs explicitly keep provider traces/secrets/scratch data out of `scenario_doc`. Merge readiness is blocked by conflicts with current `origin/main` in API/UI files; resolving should preserve current main's project/geography and generic PATCH helper work while adding scenario update routes/client.
+- 2026-06-03: For BELT provider-backed preview/apply flows, watch the trust boundary between preview and apply. A first vertical slice may accept browser-returned preview payloads if apply only mutates client-owned scenario state, but durable server-side write-back should either rederive/reestimate or use a server-owned preview token/cache so accepted provenance cannot be client-forged.

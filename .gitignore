@@ -1,0 +1,25 @@
+# Workspace-local state and tooling metadata
+.openclaw/
+.clawhub/
+state/
+
+# Nested repos / large embedded projects
+flow-do/
+
+# Scratch space and generated artifacts
+tmp/
+memory/.dreams/
+tmp-audio-transcript.txt
+tmp_issue69_body.md
+
+# Personal binaries and document exports
+*.mp3
+*.pdf
+*.ps
+*.png
+*.zip
+
+# Common local noise
+.DS_Store
+__pycache__/
+*.pyc
