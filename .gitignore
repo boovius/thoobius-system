@@ -23,3 +23,6 @@ tmp_issue69_body.md
 .DS_Store
 __pycache__/
 *.pyc
+
+# Node dependencies inside plugins
+plugins/**/node_modules/
