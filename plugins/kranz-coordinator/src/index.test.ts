@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots } from "./index.js";
+import entry, { artifactPathFor, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +11,7 @@ describe("kranz-coordinator", () => {
       "kranz_flow_start",
       "kranz_flow_link_task",
       "kranz_flow_checkpoint",
+      "kranz_flow_set_run_scope",
       "kranz_flow_tick",
       "kranz_flow_execute_pending_action",
       "kranz_flow_sync_monitor",
@@ -68,6 +69,20 @@ describe("kranz-coordinator", () => {
       kind: "read_page",
       args: ["3ddc9504-51fd-8122-83b4-f403ad4a8cad", path.join(stateRoot, "page-context", "3ddc9504-51fd-8122-83b4-f403ad4a8cad.json")],
     });
+  });
+
+  it("selects the next requested available records in queue order", () => {
+    const queueSnapshot = [
+      { position: 1, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca1", name: "Done" },
+      { position: 2, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca2", name: "Next A" },
+      { position: 3, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca3", name: "Blocked" },
+      { position: 4, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca4", name: "Next B" },
+      { position: 5, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca5", name: "Next C" },
+    ];
+    const state = { queueSnapshot, currentIndex: 1, completedPageIds: [queueSnapshot[0].pageId], blockedRecords: [{ pageId: queueSnapshot[2].pageId }] };
+    expect(selectedPageIdsForRun(state, 2)).toEqual([queueSnapshot[1].pageId, queueSnapshot[3].pageId]);
+    expect(selectedPageIdsForRun(state)).toEqual([queueSnapshot[1].pageId, queueSnapshot[3].pageId, queueSnapshot[4].pageId]);
+    expect(() => selectedPageIdsForRun(state, 0)).toThrow("positive integer");
   });
 
   it("derives a publication action only for a valid dossier without a verified receipt", () => {

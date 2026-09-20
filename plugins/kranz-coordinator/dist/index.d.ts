@@ -37,6 +37,7 @@ export declare function contextPathFor(record: QueueRecord, roots?: PathRoots): 
 export declare function receiptPathFor(record: QueueRecord, roots?: PathRoots): string;
 export declare function outcomePathFor(record: QueueRecord, attempt: number, roots?: PathRoots): string;
 export declare function inspectDossier(artifactPath: string, pageId: string, prospect?: string): ArtifactInspection;
+export declare function selectedPageIdsForRun(state: JsonObject, entryLimit?: number): string[];
 export declare function pendingGatewayAction(flow: {
     currentStep?: string;
 }, state: JsonObject, roots: PathRoots): GatewayAction | null;

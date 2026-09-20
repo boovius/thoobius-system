@@ -2,7 +2,7 @@
   "id": "kranz-coordinator",
   "name": "Kranz Coordinator",
   "description": "Run and inspect the durable Kranz NTC research controller.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -25,6 +25,7 @@
       "kranz_flow_start",
       "kranz_flow_link_task",
       "kranz_flow_checkpoint",
+      "kranz_flow_set_run_scope",
       "kranz_flow_tick",
       "kranz_flow_execute_pending_action",
       "kranz_flow_sync_monitor",

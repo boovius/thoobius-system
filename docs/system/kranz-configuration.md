@@ -73,6 +73,13 @@ The selected absolute paths are persisted in TaskFlow state. Paths outside the s
 - `kranz_flow_sync_monitor(flowId, expectedRevision)` applies the same authorize/verify handshake to only the known NTC monitor projection.
 - The deterministic scheduler passes only plugin-authorized actions to Gateway-hosted exec, where `NTC_NOTION_API_KEY` remains an opaque egress sentinel restricted to `api.notion.com`.
 
+## Requested run scope
+
+- Kranz calls `kranz_flow_set_run_scope(flowId, expectedRevision, entryLimit?)` before admitting a new request.
+- A positive `entryLimit` selects exactly the next N available records in the frozen queue snapshot. Omitting `entryLimit` selects every remaining available record.
+- Available excludes page IDs already completed, explicitly skipped, or terminally blocked. The selected page IDs are persisted before dispatch.
+- Kranz processes the selection serially. A verified record or a terminally blocked record consumes one slot. When no selected IDs remain, the flow enters `run_scope_complete` at the next queue entry and does not silently continue.
+
 ## Inspection commands
 
 Inspect the active durable flow:

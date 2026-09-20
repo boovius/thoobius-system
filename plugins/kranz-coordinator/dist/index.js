@@ -162,6 +162,55 @@ function queueFrom(state) {
         return { position: Number(row.position ?? index + 1), pageId, name: String(row.name ?? `Record ${index + 1}`), entityType: row.entityType == null ? null : String(row.entityType), url: row.url == null ? undefined : String(row.url) };
     });
 }
+function handledIdsFrom(state) {
+    const ids = new Set();
+    for (const key of ["completedPageIds", "skippedPageIds"]) {
+        for (const value of Array.isArray(state[key]) ? state[key] : [])
+            if (typeof value === "string")
+                ids.add(value);
+    }
+    for (const value of Array.isArray(state.blockedRecords) ? state.blockedRecords : []) {
+        const pageId = asObject(value).pageId;
+        if (typeof pageId === "string")
+            ids.add(pageId);
+    }
+    return ids;
+}
+export function selectedPageIdsForRun(state, entryLimit) {
+    if (entryLimit !== undefined && (!Number.isSafeInteger(entryLimit) || entryLimit < 1))
+        throw new Error("entryLimit must be a positive integer");
+    const handled = handledIdsFrom(state);
+    const index = Number(state.currentIndex ?? 0);
+    if (!Number.isInteger(index) || index < 0)
+        throw new Error("stateJson.currentIndex must be a non-negative integer");
+    const available = queueFrom(state).slice(index).filter((record) => !handled.has(record.pageId));
+    return available.slice(0, entryLimit ?? available.length).map((record) => record.pageId);
+}
+function createRunScope(state, entryLimit) {
+    const selectedPageIds = selectedPageIdsForRun(state, entryLimit);
+    return { mode: entryLimit === undefined ? "all_remaining" : "limited", requestedEntries: entryLimit ?? null, selectedPageIds, handledPageIds: [], remainingPageIds: [...selectedPageIds], status: selectedPageIds.length ? "active" : "complete", startedAt: new Date().toISOString(), ...(selectedPageIds.length ? {} : { completedAt: new Date().toISOString() }) };
+}
+function scopeAfterHandling(state, pageId) {
+    const scope = asObject(state.runScope);
+    const selectedPageIds = Array.isArray(scope.selectedPageIds) ? scope.selectedPageIds.filter((value) => typeof value === "string") : [];
+    const handledPageIds = Array.isArray(scope.handledPageIds) ? scope.handledPageIds.filter((value) => typeof value === "string") : [];
+    if (!handledPageIds.includes(pageId))
+        handledPageIds.push(pageId);
+    const remainingPageIds = selectedPageIds.filter((value) => !handledPageIds.includes(value));
+    const complete = remainingPageIds.length === 0;
+    return { mode: scope.mode === "limited" ? "limited" : "all_remaining", requestedEntries: typeof scope.requestedEntries === "number" ? scope.requestedEntries : null, selectedPageIds, handledPageIds, remainingPageIds, status: complete ? "complete" : "active", startedAt: typeof scope.startedAt === "string" ? scope.startedAt : new Date().toISOString(), ...(complete ? { completedAt: new Date().toISOString() } : {}) };
+}
+function nextQueueIndex(queue, state, currentIndex, scope, justHandledPageId) {
+    if (scope.status === "active" && scope.remainingPageIds[0]) {
+        const selectedIndex = queue.findIndex((record) => record.pageId === scope.remainingPageIds[0]);
+        if (selectedIndex >= 0)
+            return selectedIndex;
+    }
+    const handled = handledIdsFrom(state);
+    handled.add(justHandledPageId);
+    const nextIndex = queue.findIndex((record, index) => index > currentIndex && !handled.has(record.pageId));
+    return nextIndex >= 0 ? nextIndex : queue.length;
+}
 function attemptsFor(state, pageId) {
     const value = Number(asObject(state.retries)[pageId] ?? 0);
     return Number.isFinite(value) && value >= 0 ? value : 0;
@@ -269,6 +318,40 @@ export default defineToolPlugin({
             },
         }),
         tool({
+            name: "kranz_flow_set_run_scope",
+            description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.",
+            parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }),
+            factory({ api, toolContext }) {
+                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+                return { name: "kranz_flow_set_run_scope", label: "Set Kranz Run Scope", description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }), executionMode: "sequential",
+                    async execute(_id, p) {
+                        const flowId = String(p.flowId);
+                        const expectedRevision = Number(p.expectedRevision);
+                        const flow = flows.get(flowId);
+                        if (!flow || flow.syncMode !== "managed")
+                            return result({ found: false, flowId });
+                        if (flow.controllerId !== CONTROLLER_ID)
+                            throw new Error(`Flow ${flowId} is not owned by ${CONTROLLER_ID}`);
+                        if (flow.revision !== expectedRevision)
+                            return result({ status: "revision_conflict", flowId, expectedRevision, actualRevision: flow.revision });
+                        if (normalizeStep(flow.currentStep) !== Steps.SELECT_RECORD || Object.keys(asObject(asObject(flow.stateJson).child)).length) {
+                            return result({ status: "scope_change_not_safe", flowId, revision: flow.revision, currentStep: flow.currentStep });
+                        }
+                        const state = asObject(flow.stateJson);
+                        const entryLimit = p.entryLimit === undefined ? undefined : Number(p.entryLimit);
+                        const runScope = createRunScope(state, entryLimit);
+                        if (!runScope.selectedPageIds.length)
+                            return result({ status: "no_available_entries", flowId, revision: flow.revision, runScope });
+                        const queue = queueFrom(state);
+                        const selectedIndex = queue.findIndex((record) => record.pageId === runScope.selectedPageIds[0]);
+                        const selectedRecord = queue[selectedIndex];
+                        const scopedState = { ...state, runScope, currentIndex: selectedIndex, currentPageId: selectedRecord.pageId, currentProspect: selectedRecord.name, currentPosition: selectedRecord.position };
+                        const mutation = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: scopedState });
+                        return result({ status: mutation.applied ? "run_scope_set" : "revision_conflict", flowId, mutation, runScope });
+                    } };
+            },
+        }),
+        tool({
             name: "kranz_flow_tick",
             description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.",
             parameters: Type.Object({ flowId: Type.String() }),
@@ -294,6 +377,21 @@ export default defineToolPlugin({
                                 return result({ status: "revision_conflict", mutation: migration });
                             flow = migration.flow;
                             state = asObject(flow.stateJson);
+                        }
+                        let runScope = asObject(state.runScope);
+                        if (runScope.status === "complete") {
+                            return result({ flowId, revision: flow.revision, status: "run_scope_complete", currentStep: flow.currentStep, runScope });
+                        }
+                        if (runScope.status !== "active") {
+                            const initializedScope = createRunScope(state);
+                            if (!initializedScope.selectedPageIds.length)
+                                return result({ found: true, status: "batch_complete", mutation: flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...state, runScope: initializedScope, completedAt: new Date().toISOString() } }), monitor: monitorAction(flowId, roots) });
+                            const scoped = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: normalizeStep(flow.currentStep), stateJson: { ...state, runScope: initializedScope } });
+                            if (!scoped.applied)
+                                return result({ status: "revision_conflict", mutation: scoped });
+                            flow = scoped.flow;
+                            state = asObject(flow.stateJson);
+                            runScope = asObject(state.runScope);
                         }
                         const queue = queueFrom(state);
                         const index = Number(state.currentIndex ?? 0);
@@ -329,10 +427,11 @@ export default defineToolPlugin({
                             if (attempt > MAX_RESEARCH_ATTEMPTS) {
                                 const blocked = Array.isArray(state.blockedRecords) ? [...state.blockedRecords] : [];
                                 blocked.push({ pageId: record.pageId, name: record.name, reason: "research_retry_limit_exhausted", attempts: priorFailures });
-                                const nextIndex = index + 1, next = queue[nextIndex];
-                                const nextState = { ...state, blockedRecords: blocked, currentIndex: nextIndex, child: null, artifact: null, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
-                                const mutation = next ? flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState }) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
-                                return result({ status: "record_blocked", pageId: record.pageId, mutation, monitor: monitorAction(flowId, roots) });
+                                const updatedScope = scopeAfterHandling(state, record.pageId);
+                                const nextIndex = nextQueueIndex(queue, state, index, updatedScope, record.pageId), next = queue[nextIndex];
+                                const nextState = { ...state, runScope: updatedScope, blockedRecords: blocked, currentIndex: nextIndex, child: null, artifact: null, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
+                                const mutation = next ? (updatedScope.status === "complete" ? flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.SELECT_RECORD, stateJson: nextState, waitJson: { kind: "run_scope_complete", handledPageIds: updatedScope.handledPageIds } }) : flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState })) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
+                                return result({ status: next && updatedScope.status === "complete" ? "run_scope_complete" : "record_blocked", pageId: record.pageId, mutation, runScope: updatedScope, monitor: monitorAction(flowId, roots) });
                             }
                             const dispatchId = `kranz:${flowId}:${record.pageId}:attempt:${attempt}`;
                             const requestedSessionKey = `agent:${MCCLINTOCK_AGENT_ID}:kranz-${flowId}-${record.pageId}-${attempt}`;
@@ -405,10 +504,11 @@ export default defineToolPlugin({
                             const completed = Array.isArray(state.completedPageIds) ? [...state.completedPageIds] : [];
                             if (!completed.includes(record.pageId))
                                 completed.push(record.pageId);
-                            const nextIndex = index + 1, next = queue[nextIndex];
-                            const nextState = { ...state, completedPageIds: completed, currentIndex: nextIndex, child: null, artifact: { path: artifactPath, sha256: hash, packetComplete: true }, notionWrite: { pageId: record.pageId, artifactSha256: hash, verified: true, status: "Deep Research", verifiedAt: receipt.verifiedAt ?? new Date().toISOString() }, readBackVerification: receipt.readBack ?? { verified: true }, lastVerifiedAt: receipt.verifiedAt ?? new Date().toISOString(), lastCompletedRecord: { pageId: record.pageId, name: record.name, position: record.position }, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
-                            const mutation = next ? flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState }) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
-                            return result({ status: next ? "record_complete" : "batch_complete", completed: { pageId: record.pageId, name: record.name }, next: next ?? null, mutation, monitor: monitorAction(flowId, roots) });
+                            const updatedScope = scopeAfterHandling(state, record.pageId);
+                            const nextIndex = nextQueueIndex(queue, state, index, updatedScope, record.pageId), next = queue[nextIndex];
+                            const nextState = { ...state, runScope: updatedScope, completedPageIds: completed, currentIndex: nextIndex, child: null, artifact: { path: artifactPath, sha256: hash, packetComplete: true }, notionWrite: { pageId: record.pageId, artifactSha256: hash, verified: true, status: "Deep Research", verifiedAt: receipt.verifiedAt ?? new Date().toISOString() }, readBackVerification: receipt.readBack ?? { verified: true }, lastVerifiedAt: receipt.verifiedAt ?? new Date().toISOString(), lastCompletedRecord: { pageId: record.pageId, name: record.name, position: record.position }, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
+                            const mutation = next ? (updatedScope.status === "complete" ? flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.SELECT_RECORD, stateJson: nextState, waitJson: { kind: "run_scope_complete", handledPageIds: updatedScope.handledPageIds } }) : flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState })) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
+                            return result({ status: next && updatedScope.status === "complete" ? "run_scope_complete" : next ? "record_complete" : "batch_complete", completed: { pageId: record.pageId, name: record.name }, next: next ?? null, mutation, runScope: updatedScope, monitor: monitorAction(flowId, roots) });
                         }
                         return result({ flowId, revision: flow.revision, status: "no_transition", currentStep: flow.currentStep, monitor: monitorAction(flowId, roots) });
                     } };

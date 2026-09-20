@@ -26,12 +26,15 @@ Runtime files default to the shared workflow directory `/home/boovius/.openclaw/
 - `kranz_flow_start`
 - `kranz_flow_link_task`
 - `kranz_flow_checkpoint`
+- `kranz_flow_set_run_scope`
 - `kranz_flow_tick`
 - `kranz_flow_execute_pending_action`
 - `kranz_flow_sync_monitor`
 - `kranz_flow_status`
 
 `kranz_flow_tick` is restart-safe and idempotent. It dispatches McClintock with a deterministic session and idempotency key, links the accepted run, checkpoints the flow, and returns immediately. Later ticks observe the durable dossier and child-outcome file, validate the packet, and recover from failed or stale runs without advancing the queue.
+
+Before a requested run, call `kranz_flow_set_run_scope` with the exact flow revision. Supplying `entryLimit` selects the next N still-available page IDs in snapshot order; omitting it selects all remaining available IDs. The selection is persisted. Verified and terminally blocked records consume one selected slot, and the flow pauses at `run_scope_complete` when that exact selection is exhausted.
 
 `kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives and authorizes the current page read or verified publication from TaskFlow state, then verifies the resulting context or publication receipt after the protected Gateway executor runs the fixed script. `kranz_flow_sync_monitor` applies the same authorize/verify handshake to the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, or Notion operation from the model.
 

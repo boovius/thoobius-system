@@ -67,6 +67,9 @@ const blocked = Array.isArray(state.blockedRecords) ? state.blockedRecords.lengt
 let notify;
 if (lastTick?.status === "batch_complete" || flow.status === "succeeded") {
   notify = `Kranz completed the NTC deep-research batch: ${completed}/${total} verified, ${blocked} blocked.`;
+} else if (lastTick?.status === "run_scope_complete") {
+  const handled = lastTick.runScope?.handledPageIds?.length ?? 0;
+  notify = `Kranz completed the requested run scope: ${handled} entries handled. Overall progress: ${completed}/${total} verified, ${blocked} blocked. Next: ${lastTick.next?.name ?? state.currentProspect ?? "none"}.`;
 } else if (lastTick?.status === "record_blocked") {
   notify = `Kranz blocked ${lastTick.pageId} after exhausting research retries. Progress: ${completed}/${total} verified, ${blocked} blocked.`;
 } else if (lastTick?.status === "record_complete" && completed > 0 && completed % 5 === 0) {
