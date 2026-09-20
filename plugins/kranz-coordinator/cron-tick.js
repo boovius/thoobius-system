@@ -20,7 +20,9 @@ function shellArg(value) {
   return JSON.stringify(String(value));
 }
 
-async function runGatewayAction(action, title) {
+async function runAuthorizedGatewayAction(authorization, title) {
+  if (authorization?.status !== "action_authorized") throw new Error(`Kranz action was not authorized: ${authorization?.status ?? "missing"}`);
+  const action = authorization.action;
   if (!action || !ALLOWED_SCRIPTS.has(action.script)) throw new Error(`Refusing unrecognized Kranz action: ${action?.script ?? "missing"}`);
   const command = ["node", action.script, ...(action.args ?? [])].map(shellArg).join(" ");
   return tools.openclaw__gateway_exec({
@@ -37,21 +39,26 @@ let lastTick;
 for (let transition = 0; transition < 6; transition += 1) {
   lastTick = detailsOf(await tools.kranz_flow_tick({ flowId: FLOW_ID }));
   if (lastTick?.status !== "action_required") break;
-  const kind = lastTick.action?.kind;
-  await runGatewayAction(
-    lastTick.action,
-    kind === "publish_notion" ? "Publish and verify the current NTC research record" : "Read the current NTC research record",
-  );
+  const authorization = detailsOf(await tools.kranz_flow_execute_pending_action({ flowId: FLOW_ID, expectedRevision: lastTick.revision }));
+  await runAuthorizedGatewayAction(authorization, authorization.action?.kind === "publish_notion" ? "Publish and verify the current NTC research record" : "Read the current NTC research record");
+  const verification = detailsOf(await tools.kranz_flow_execute_pending_action({ flowId: FLOW_ID, expectedRevision: lastTick.revision }));
+  if (verification?.status !== "action_complete") throw new Error(`Kranz action verification failed: ${verification?.status ?? "missing"}`);
 }
 
 if (lastTick?.status === "action_required") throw new Error("Kranz tick exceeded the protected-action transition budget");
 
-if (lastTick?.monitor) {
-  await runGatewayAction(lastTick.monitor, "Sync the human-readable Kranz run monitor");
-}
-
 const status = detailsOf(await tools.kranz_flow_status({ flowId: FLOW_ID }));
 const flow = status?.flow ?? {};
+
+if (lastTick?.monitor) {
+  const authorization = detailsOf(await tools.kranz_flow_sync_monitor({ flowId: FLOW_ID, expectedRevision: flow.revision }));
+  if (authorization?.status === "action_authorized") {
+    await runAuthorizedGatewayAction(authorization, "Sync the human-readable Kranz run monitor");
+  }
+  const verification = detailsOf(await tools.kranz_flow_sync_monitor({ flowId: FLOW_ID, expectedRevision: flow.revision }));
+  if (verification?.status !== "monitor_synced") throw new Error(`Kranz monitor verification failed: ${verification?.status ?? "missing"}`);
+}
+
 const state = flow.stateJson ?? {};
 const completed = Array.isArray(state.completedPageIds) ? state.completedPageIds.length : 0;
 const total = Array.isArray(state.queueSnapshot) ? state.queueSnapshot.length : 0;

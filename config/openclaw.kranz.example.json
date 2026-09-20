@@ -13,6 +13,11 @@
           "alsoAllow": [
             "kranz-coordinator"
           ]
+        },
+        "subagents": {
+          "allowAgents": [
+            "mcclintock-deep-opus"
+          ]
         }
       },
       "mcclintock-deep-opus": {

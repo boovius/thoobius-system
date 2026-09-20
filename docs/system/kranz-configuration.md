@@ -8,7 +8,7 @@
 - `plugins/kranz-coordinator/tsconfig.json` — TypeScript compiler settings.
 - `plugins/kranz-coordinator/vitest.config.ts` — targeted test configuration.
 - `plugins/kranz-coordinator/src/index.ts` — controller implementation and path precedence.
-- `plugins/kranz-coordinator/cron-tick.js` — deterministic scheduled controller payload.
+- `plugins/kranz-coordinator/cron-tick.js` — deterministic scheduled controller payload using only scoped plugin methods.
 - `scripts/lib/ntc-paths.mjs` — shared path validation for Gateway scripts.
 - `scripts/migrate-ntc-state-root.mjs` — copy-and-verify migration from legacy agent-owned directories.
 - `scripts/ntc-page-read.mjs` — protected Notion page reader.
@@ -64,6 +64,14 @@ For each managed flow:
 3. Shared defaults: `<workspace>/.ntc-state` and `<stateRoot>/artifacts`.
 
 The selected absolute paths are persisted in TaskFlow state. Paths outside the shared workspace are rejected.
+
+## Dispatch and Notion authority
+
+- Kranz is configured with `subagents.allowAgents: ["mcclintock-deep-opus"]`; no other child agent is allowed.
+- Production dispatch uses the plugin SDK's supported subagent runtime with a deterministic McClintock session key and idempotency key. The retired embedded runner is not used.
+- `kranz_flow_execute_pending_action(flowId, expectedRevision)` derives and revision-locks the only permitted page read or publication from TaskFlow state, then verifies its context or receipt. It does not accept arbitrary page ids, scripts, paths, properties, or Notion operations.
+- `kranz_flow_sync_monitor(flowId, expectedRevision)` applies the same authorize/verify handshake to only the known NTC monitor projection.
+- The deterministic scheduler passes only plugin-authorized actions to Gateway-hosted exec, where `NTC_NOTION_API_KEY` remains an opaque egress sentinel restricted to `api.notion.com`.
 
 ## Inspection commands
 

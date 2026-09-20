@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, inspectDossier, outcomePathFor, resolvePathRoots } from "./index.js";
+import entry, { artifactPathFor, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,6 +12,8 @@ describe("kranz-coordinator", () => {
       "kranz_flow_link_task",
       "kranz_flow_checkpoint",
       "kranz_flow_tick",
+      "kranz_flow_execute_pending_action",
+      "kranz_flow_sync_monitor",
       "kranz_flow_status",
     ]);
   });
@@ -56,5 +58,30 @@ describe("kranz-coordinator", () => {
   it("derives a deterministic child outcome path", () => {
     expect(outcomePathFor({ position: 4, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8cad", name: "Guess" }, 2))
       .toContain("3ddc9504-51fd-8122-83b4-f403ad4a8cad-attempt-2.json");
+  });
+
+  it("derives a page-read action only from the current flow record", () => {
+    const stateRoot = mkdtempSync(path.join(tmpdir(), "kranz-state-"));
+    const roots = { stateRoot, artifactRoot: path.join(stateRoot, "artifacts") };
+    const state = { currentIndex: 0, queueSnapshot: [{ position: 1, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8cad", name: "Example Co" }] };
+    expect(pendingGatewayAction({ currentStep: "SELECT_RECORD" }, state, roots)).toMatchObject({
+      kind: "read_page",
+      args: ["3ddc9504-51fd-8122-83b4-f403ad4a8cad", path.join(stateRoot, "page-context", "3ddc9504-51fd-8122-83b4-f403ad4a8cad.json")],
+    });
+  });
+
+  it("derives a publication action only for a valid dossier without a verified receipt", () => {
+    const stateRoot = mkdtempSync(path.join(tmpdir(), "kranz-state-"));
+    const roots = { stateRoot, artifactRoot: path.join(stateRoot, "artifacts") };
+    const pageId = "3ddc9504-51fd-8122-83b4-f403ad4a8cad";
+    const record = { position: 1, pageId, name: "Example Co" };
+    const artifact = artifactPathFor(record, roots);
+    const state = { currentIndex: 0, queueSnapshot: [record] };
+    mkdirSync(path.dirname(artifact), { recursive: true });
+    writeFileSync(artifact, `Prospect: Example Co\nPage ID: ${pageId}\nArtifact path: ${artifact}\n## Deep Research\n### Charities\nhttps://example.com/source\n### Beverly Hills\nUnresolved\n### Race/Run\nNone\n### Cancer\nNone\n### Personnel\nNone\n### Other Background Context\nNone\n## Notion Replacement Contract\nPreserve unrelated content.\nPACKET_COMPLETE\n`, { flag: "w" });
+    expect(pendingGatewayAction({ currentStep: "WRITE_NOTION" }, state, roots)).toMatchObject({
+      kind: "publish_notion",
+      args: [pageId, artifact, path.join(stateRoot, "publication-receipts", `${pageId}.json`)],
+    });
   });
 });

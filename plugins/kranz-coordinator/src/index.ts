@@ -1,4 +1,4 @@
-import crypto, { randomUUID } from "node:crypto";
+import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
@@ -27,6 +27,7 @@ type ArtifactInspection = { ok: boolean; path: string; sha256?: string; errors: 
 type ResearchOutcome = { status: "succeeded" | "failed"; runId: string; endedAt: string; error?: string };
 type PluginConfig = { stateRoot?: string; artifactRoot?: string };
 type PathRoots = { stateRoot: string; artifactRoot: string };
+type GatewayAction = { kind: "read_page" | "publish_notion" | "sync_monitor"; script: string; args: string[]; env: Record<string, string> };
 
 const Steps = {
   SELECT_RECORD: "SELECT_RECORD",
@@ -198,6 +199,31 @@ function actionRequired(flow: { flowId: string; revision: number; currentStep?: 
   return { flowId: flow.flowId, revision: flow.revision, status: "action_required", currentStep: flow.currentStep, action, monitor: monitorAction(flow.flowId, roots) };
 }
 
+export function pendingGatewayAction(flow: { currentStep?: string }, state: JsonObject, roots: PathRoots): GatewayAction | null {
+  const queue = queueFrom(state);
+  const index = Number(state.currentIndex ?? 0);
+  if (!Number.isInteger(index) || index < 0) throw new Error("stateJson.currentIndex must be a non-negative integer");
+  const record = queue[index];
+  if (!record) return null;
+  const step = normalizeStep(flow.currentStep);
+  if (step === Steps.SELECT_RECORD) {
+    const contextPath = contextPathFor(record, roots);
+    if (!readContext(contextPath, record.pageId).ok) {
+      return { kind: "read_page", script: PAGE_READER_SCRIPT, args: [record.pageId, contextPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } };
+    }
+    return null;
+  }
+  if (step === Steps.WRITE_NOTION) {
+    const artifactPath = artifactPathFor(record, roots);
+    const artifact = inspectDossier(artifactPath, record.pageId, record.name);
+    if (!artifact.ok || !artifact.sha256) throw new Error(`Cannot publish invalid research artifact: ${artifact.errors.join(",")}`);
+    const receiptPath = receiptPathFor(record, roots);
+    if (readReceipt(receiptPath, record.pageId, artifact.sha256)) return null;
+    return { kind: "publish_notion", script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } };
+  }
+  return null;
+}
+
 export default defineToolPlugin({
   id: "kranz-coordinator",
   name: "Kranz Coordinator",
@@ -299,22 +325,29 @@ export default defineToolPlugin({
                 const mutation = next ? flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState }) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
                 return result({ status: "record_blocked", pageId: record.pageId, mutation, monitor: monitorAction(flowId, roots) });
               }
-              const runId = `kranz:${flowId}:${record.pageId}:attempt:${attempt}`;
-              const childSessionKey = `agent:${MCCLINTOCK_AGENT_ID}:kranz-${flowId}-${record.pageId}-${attempt}`;
+              const dispatchId = `kranz:${flowId}:${record.pageId}:attempt:${attempt}`;
+              const requestedSessionKey = `agent:${MCCLINTOCK_AGENT_ID}:kranz-${flowId}-${record.pageId}-${attempt}`;
               const outcomePath = outcomePathFor(record, attempt, roots);
               const prompt = buildResearchPrompt(record, queue.length, contextPath, artifactPath);
-              const linked = flows.runTask({ flowId, runtime: "subagent", sourceId: runId, childSessionKey, agentId: MCCLINTOCK_AGENT_ID, runId, label: `McClintock — ${record.name}`, task: prompt, status: "running", startedAt: Date.now(), lastEventAt: Date.now() });
+              const launched = await api.runtime.subagent.run({
+                sessionKey: requestedSessionKey,
+                message: prompt,
+                promptMode: "minimal",
+                deliver: false,
+                idempotencyKey: dispatchId,
+                cwd: WORKSPACE_ROOT,
+              });
+              const runId = launched.runId;
+              const childSessionKey = launched.sessionKey ?? requestedSessionKey;
+              const linked = flows.runTask({ flowId, runtime: "subagent", sourceId: dispatchId, childSessionKey, agentId: MCCLINTOCK_AGENT_ID, runId, label: `McClintock — ${record.name}`, task: prompt, status: "running", startedAt: Date.now(), lastEventAt: Date.now() });
               if (!linked.created && !linked.found) return result({ status: "link_failed", reason: linked.reason, flowId, runId });
               flow = flows.get(flowId)!;
-              const waiting = flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.WAIT_RESEARCH, stateJson: { ...state, child: { runId, childSessionKey, attempt, status: "running", startedAt: new Date().toISOString(), outcomePath }, expectedArtifactPath: artifactPath }, waitJson: { kind: "child_completion", childRunId: runId, childSessionKey, pageId: record.pageId, attempt } });
+              const waiting = flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.WAIT_RESEARCH, stateJson: { ...state, child: { dispatchId, runId, childSessionKey, attempt, status: "running", startedAt: new Date().toISOString(), outcomePath }, expectedArtifactPath: artifactPath }, waitJson: { kind: "child_completion", childRunId: runId, childSessionKey, pageId: record.pageId, attempt } });
               if (!waiting.applied) return result({ status: "revision_conflict", linked, mutation: waiting });
-              // Runtime exposes a deeply-readonly snapshot; the embedded runner's
-              // public type accepts the equivalent mutable config shape.
-              const cfg = structuredClone(api.runtime.config.current()) as any;
-              const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg, MCCLINTOCK_AGENT_ID);
-              const agentDir = api.runtime.agent.resolveAgentDir(cfg, MCCLINTOCK_AGENT_ID);
-              void api.runtime.agent.runEmbeddedAgent({ sessionId: randomUUID(), sessionKey: childSessionKey, sessionPersistence: "durable", agentId: MCCLINTOCK_AGENT_ID, workspaceDir, bootstrapWorkspaceDir: workspaceDir, isCanonicalWorkspace: true, agentDir, config: cfg, prompt, timeoutMs: 20 * 60 * 1000, runTimeoutOverrideMs: 20 * 60 * 1000, runId, trigger: "manual", spawnedBy: toolContext.sessionKey, sandboxAgentId: MCCLINTOCK_AGENT_ID, disableMessageTool: true, requireExplicitMessageTarget: true })
-                .then(() => writeOutcome(outcomePath, { status: "succeeded", runId, endedAt: new Date().toISOString() }))
+              void api.runtime.subagent.waitForRun({ runId, timeoutMs: 20 * 60 * 1000 })
+                .then((outcome) => writeOutcome(outcomePath, outcome.status === "ok"
+                  ? { status: "succeeded", runId, endedAt: new Date().toISOString() }
+                  : { status: "failed", runId, endedAt: new Date().toISOString(), error: outcome.error ?? outcome.status }))
                 .catch((error) => writeOutcome(outcomePath, { status: "failed", runId, endedAt: new Date().toISOString(), error: String(error) }));
               return result({ flowId, revision: waiting.flow.revision, status: "research_dispatched", currentStep: Steps.WAIT_RESEARCH, child: { runId, childSessionKey, attempt }, monitor: monitorAction(flowId, roots) });
             }
@@ -361,6 +394,68 @@ export default defineToolPlugin({
               return result({ status: next ? "record_complete" : "batch_complete", completed: { pageId: record.pageId, name: record.name }, next: next ?? null, mutation, monitor: monitorAction(flowId, roots) });
             }
             return result({ flowId, revision: flow.revision, status: "no_transition", currentStep: flow.currentStep, monitor: monitorAction(flowId, roots) });
+          } };
+      },
+    }),
+    tool({
+      name: "kranz_flow_execute_pending_action",
+      description: "Execute only the protected NTC Notion action implied by the current flow revision.",
+      parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }),
+      factory({ api, toolContext, config }) {
+        const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+        return { name: "kranz_flow_execute_pending_action", label: "Execute Kranz Notion Action", description: "Execute only the protected NTC Notion action implied by the current flow revision.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }), executionMode: "sequential" as const,
+          async execute(_id: string, p: Record<string, unknown>) {
+            const flowId = String(p.flowId);
+            const expectedRevision = Number(p.expectedRevision);
+            const flow = flows.get(flowId);
+            if (!flow || flow.syncMode !== "managed") return result({ found: false, flowId });
+            if (flow.controllerId !== CONTROLLER_ID) throw new Error(`Flow ${flowId} is not owned by ${CONTROLLER_ID}`);
+            if (flow.revision !== expectedRevision) return result({ status: "revision_conflict", flowId, expectedRevision, actualRevision: flow.revision });
+            const state = asObject(flow.stateJson);
+            const roots = resolvePathRoots(config, state);
+            const action = pendingGatewayAction(flow, state, roots);
+            const queue = queueFrom(state);
+            const record = queue[Number(state.currentIndex ?? 0)];
+            if (!record) return result({ status: "no_pending_action", flowId, revision: flow.revision, currentStep: flow.currentStep });
+            if (action) return result({ status: "action_authorized", flowId, revision: flow.revision, currentStep: flow.currentStep, action });
+            if (normalizeStep(flow.currentStep) === Steps.SELECT_RECORD) {
+              const context = readContext(contextPathFor(record, roots), record.pageId);
+              if (context.ok) return result({ status: "action_complete", action: "read_page", flowId, revision: flow.revision, pageId: record.pageId, outputPath: contextPathFor(record, roots), readAt: context.readAt ?? null });
+            }
+            if (normalizeStep(flow.currentStep) === Steps.WRITE_NOTION) {
+              const artifact = inspectDossier(artifactPathFor(record, roots), record.pageId, record.name);
+              const receipt = artifact.sha256 ? readReceipt(receiptPathFor(record, roots), record.pageId, artifact.sha256) : null;
+              if (receipt) return result({ status: "action_complete", action: "publish_notion", flowId, revision: flow.revision, pageId: record.pageId, receiptPath: receiptPathFor(record, roots), verifiedAt: receipt.verifiedAt ?? null });
+            }
+            return result({ status: "no_pending_action", flowId, revision: flow.revision, currentStep: flow.currentStep });
+          } };
+      },
+    }),
+    tool({
+      name: "kranz_flow_sync_monitor",
+      description: "Sync the human-readable Notion monitor for one exact flow revision through the protected Gateway.",
+      parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }),
+      factory({ api, toolContext, config }) {
+        const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+        return { name: "kranz_flow_sync_monitor", label: "Sync Kranz Monitor", description: "Sync the human-readable Notion monitor for one exact flow revision through the protected Gateway.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }), executionMode: "sequential" as const,
+          async execute(_id: string, p: Record<string, unknown>) {
+            const flowId = String(p.flowId);
+            const expectedRevision = Number(p.expectedRevision);
+            const flow = flows.get(flowId);
+            if (!flow || flow.syncMode !== "managed") return result({ found: false, flowId });
+            if (flow.controllerId !== CONTROLLER_ID) throw new Error(`Flow ${flowId} is not owned by ${CONTROLLER_ID}`);
+            if (flow.revision !== expectedRevision) return result({ status: "revision_conflict", flowId, expectedRevision, actualRevision: flow.revision });
+            const roots = resolvePathRoots(config, asObject(flow.stateJson));
+            const monitorPath = path.join(roots.stateRoot, "monitor", "notion-monitor.json");
+            if (existsSync(monitorPath)) {
+              const monitor = JSON.parse(readFileSync(monitorPath, "utf8")) as { flowId?: string; syncedRevision?: number; url?: string; syncedAt?: string };
+              if (monitor.flowId === flowId && monitor.syncedRevision === flow.revision) {
+                return result({ status: "monitor_synced", flowId, revision: flow.revision, monitorPath, url: monitor.url ?? null, syncedAt: monitor.syncedAt ?? null });
+              }
+            }
+            const base = monitorAction(flowId, roots);
+            const action: GatewayAction = { kind: "sync_monitor", script: base.script, args: base.args, env: base.env };
+            return result({ status: "action_authorized", flowId, revision: flow.revision, action });
           } };
       },
     }),

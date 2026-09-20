@@ -1,6 +1,6 @@
 # Kranz Coordinator
 
-OpenClaw tools for persisted NTC deep-research coordination. The plugin owns the deterministic serial controller state, launches one isolated McClintock research run at a time, validates durable artifacts, and stops at the protected Gateway boundary for Notion reads/writes. It never receives the NTC Notion credential and never performs outreach.
+OpenClaw tools for persisted NTC deep-research coordination. The plugin owns the deterministic serial controller state, launches one isolated McClintock research run at a time through the supported plugin subagent runtime, validates durable artifacts, and executes only flow-derived Notion actions through Gateway-hosted exec. It never receives the plaintext NTC Notion credential and never performs outreach.
 
 ## Paths
 
@@ -27,13 +27,17 @@ Runtime files default to the shared workflow directory `/home/boovius/.openclaw/
 - `kranz_flow_link_task`
 - `kranz_flow_checkpoint`
 - `kranz_flow_tick`
+- `kranz_flow_execute_pending_action`
+- `kranz_flow_sync_monitor`
 - `kranz_flow_status`
 
-`kranz_flow_tick` is restart-safe and idempotent. It checkpoints and links a McClintock run before dispatching it in the background, then returns immediately. Later ticks observe the durable dossier and child-outcome file, validate the packet, and recover from failed or stale runs without advancing the queue.
+`kranz_flow_tick` is restart-safe and idempotent. It dispatches McClintock with a deterministic session and idempotency key, links the accepted run, checkpoints the flow, and returns immediately. Later ticks observe the durable dossier and child-outcome file, validate the packet, and recover from failed or stale runs without advancing the queue.
 
-A five-minute OpenClaw cron job invokes Kranz. When the tick reaches a protected Notion boundary it returns an explicit Gateway action; the scheduled Kranz turn executes that action and ticks again. TaskFlow remains the machine source of truth and the Notion monitor is only a human-readable projection.
+`kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives and authorizes the current page read or verified publication from TaskFlow state, then verifies the resulting context or publication receipt after the protected Gateway executor runs the fixed script. `kranz_flow_sync_monitor` applies the same authorize/verify handshake to the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, or Notion operation from the model.
 
-The deterministic headless scheduler payload lives in `cron-tick.js`. It allowlists the three NTC Gateway scripts, stops after one record completes, and only emits owner notifications for five-record milestones, blockers, and final completion.
+A five-minute OpenClaw cron job invokes Kranz. When the tick reaches a protected Notion boundary it calls the narrow plugin action tool and ticks again. TaskFlow remains the machine source of truth and the Notion monitor is only a human-readable projection.
+
+The deterministic headless scheduler payload lives in `cron-tick.js`. It executes only revision-locked actions returned by Kranz plugin methods through the protected Gateway executor, stops after one record completes, and only emits owner notifications for five-record milestones, blockers, and final completion.
 
 The controller uses the documented uppercase phases (`SELECT_RECORD`, `DISPATCH_RESEARCH`, `WAIT_RESEARCH`, `VALIDATE_PACKET`, and `WRITE_NOTION`) while accepting the earlier lowercase checkpoint names for in-place migration of the active production flow.
 
