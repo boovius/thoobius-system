@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import path from "node:path";
+import { resolveNtcStateRoot } from "./lib/ntc-paths.mjs";
 
 if (process.env.OPENCLAW_NOTION_PROFILE !== "ntc") throw new Error("OPENCLAW_NOTION_PROFILE must be ntc");
 const token = process.env.NTC_NOTION_API_KEY;
@@ -8,10 +10,11 @@ if (!token) throw new Error("Protected NTC Notion credential is unavailable");
 
 const flowId = process.argv[2];
 if (!/^[0-9a-f-]{36}$/i.test(flowId ?? "")) throw new Error("Valid flow ID required");
+const stateRoot = resolveNtcStateRoot(process.argv[3]);
 
 const AUTOMATION_PAGE_ID = "3ddc9504-51fd-8047-8f27-e58e36922b0f";
 const MONITOR_TITLE = "Kranz Research Monitor — Current Run";
-const STATE_PATH = "/home/boovius/.openclaw/workspace/agents/kranz-coordinator/.ntc-state/notion-monitor.json";
+const STATE_PATH = path.join(stateRoot, "monitor/notion-monitor.json");
 const execFileAsync = promisify(execFile);
 
 async function notion(endpoint, init = {}) {

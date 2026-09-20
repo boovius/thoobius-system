@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, inspectDossier, outcomePathFor } from "./index.js";
+import entry, { artifactPathFor, inspectDossier, outcomePathFor, resolvePathRoots } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,20 @@ describe("kranz-coordinator", () => {
     });
     it("derives a deterministic artifact path", () => {
         expect(artifactPathFor({ position: 4, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8cad", name: "Guess Inc. (GUESS Foundation)" }))
-            .toContain("3ddc9504-51fd-8122-83b4-f403ad4a8cad-guess-inc-guess-foundation.md");
+            .toBe("/home/boovius/.openclaw/workspace/.ntc-state/artifacts/3ddc9504-51fd-8122-83b4-f403ad4a8cad-guess-inc-guess-foundation.md");
+    });
+    it("uses flow paths before plugin paths and safe shared defaults", () => {
+        expect(resolvePathRoots()).toEqual({
+            stateRoot: "/home/boovius/.openclaw/workspace/.ntc-state",
+            artifactRoot: "/home/boovius/.openclaw/workspace/.ntc-state/artifacts",
+        });
+        expect(resolvePathRoots({ stateRoot: ".plugin-state", artifactRoot: ".plugin-artifacts" }, { stateRoot: ".flow-state", artifactRoot: ".flow-artifacts" })).toEqual({
+            stateRoot: "/home/boovius/.openclaw/workspace/.flow-state",
+            artifactRoot: "/home/boovius/.openclaw/workspace/.flow-artifacts",
+        });
+    });
+    it("rejects configured paths outside the shared workspace", () => {
+        expect(() => resolvePathRoots({ stateRoot: "/tmp/ntc-state" })).toThrow("must remain inside");
     });
     it("validates the strict dossier handoff", () => {
         const dir = mkdtempSync(path.join(tmpdir(), "kranz-test-"));

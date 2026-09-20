@@ -8,11 +8,16 @@ const CONTROLLER_ID = "kranz/ntc-deep-research";
 const MCCLINTOCK_AGENT_ID = "mcclintock-deep-opus";
 const MAX_RESEARCH_ATTEMPTS = 2;
 const CHILD_STALE_MS = 25 * 60 * 1000;
-const STATE_ROOT = "/home/boovius/.openclaw/workspace/agents/kranz-coordinator/.ntc-state";
-const ARTIFACT_ROOT = "/home/boovius/.openclaw/workspace/agents/mcclintock-deep-opus/artifacts";
+const WORKSPACE_ROOT = "/home/boovius/.openclaw/workspace";
+const DEFAULT_STATE_ROOT = path.join(WORKSPACE_ROOT, ".ntc-state");
 const WRITER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-write-deep-research.mjs";
 const PAGE_READER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs";
 const MONITOR_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-monitor-sync.mjs";
+
+const PluginConfigSchema = Type.Object({
+  stateRoot: Type.Optional(Type.String({ description: "Shared NTC runtime-state root. Relative paths resolve from the shared workspace." })),
+  artifactRoot: Type.Optional(Type.String({ description: "Durable research-artifact root. Defaults to <stateRoot>/artifacts." })),
+}, { additionalProperties: false });
 
 const JsonText = Type.String({ description: "A JSON-encoded object used as the complete persisted TaskFlow state." });
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -20,6 +25,8 @@ type JsonObject = { [key: string]: JsonValue };
 type QueueRecord = { position: number; pageId: string; name: string; entityType?: string | null; url?: string };
 type ArtifactInspection = { ok: boolean; path: string; sha256?: string; errors: string[] };
 type ResearchOutcome = { status: "succeeded" | "failed"; runId: string; endedAt: string; error?: string };
+type PluginConfig = { stateRoot?: string; artifactRoot?: string };
+type PathRoots = { stateRoot: string; artifactRoot: string };
 
 const Steps = {
   SELECT_RECORD: "SELECT_RECORD",
@@ -58,20 +65,38 @@ function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }
 
-export function artifactPathFor(record: QueueRecord): string {
-  return path.join(ARTIFACT_ROOT, `${record.pageId}-${slug(record.name)}.md`);
+function resolveWorkspacePath(value: string | undefined, fallback: string): string {
+  const candidate = value || fallback;
+  const resolved = path.resolve(path.isAbsolute(candidate) ? candidate : path.join(WORKSPACE_ROOT, candidate));
+  const relative = path.relative(WORKSPACE_ROOT, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Kranz path must remain inside ${WORKSPACE_ROOT}: ${resolved}`);
+  }
+  return resolved;
 }
 
-export function contextPathFor(record: QueueRecord): string {
-  return path.join(STATE_ROOT, "page-context", `${record.pageId}.json`);
+export function resolvePathRoots(config: PluginConfig = {}, state: JsonObject = {}): PathRoots {
+  const stateRootValue = typeof state.stateRoot === "string" ? state.stateRoot : config.stateRoot;
+  const stateRoot = resolveWorkspacePath(stateRootValue, DEFAULT_STATE_ROOT);
+  const artifactRootValue = typeof state.artifactRoot === "string" ? state.artifactRoot : config.artifactRoot;
+  const artifactRoot = resolveWorkspacePath(artifactRootValue, path.join(stateRoot, "artifacts"));
+  return { stateRoot, artifactRoot };
 }
 
-export function receiptPathFor(record: QueueRecord): string {
-  return path.join(STATE_ROOT, "publication-receipts", `${record.pageId}.json`);
+export function artifactPathFor(record: QueueRecord, roots: PathRoots = resolvePathRoots()): string {
+  return path.join(roots.artifactRoot, `${record.pageId}-${slug(record.name)}.md`);
 }
 
-export function outcomePathFor(record: QueueRecord, attempt: number): string {
-  return path.join(STATE_ROOT, "research-outcomes", `${record.pageId}-attempt-${attempt}.json`);
+export function contextPathFor(record: QueueRecord, roots: PathRoots = resolvePathRoots()): string {
+  return path.join(roots.stateRoot, "page-context", `${record.pageId}.json`);
+}
+
+export function receiptPathFor(record: QueueRecord, roots: PathRoots = resolvePathRoots()): string {
+  return path.join(roots.stateRoot, "publication-receipts", `${record.pageId}.json`);
+}
+
+export function outcomePathFor(record: QueueRecord, attempt: number, roots: PathRoots = resolvePathRoots()): string {
+  return path.join(roots.stateRoot, "research-outcomes", `${record.pageId}-attempt-${attempt}.json`);
 }
 
 export function inspectDossier(artifactPath: string, pageId: string, prospect?: string): ArtifactInspection {
@@ -165,27 +190,32 @@ ${artifactPath}
 The file must include the exact page ID, prospect, entity type, queue position, research timestamp, and artifact path; exactly one ## Deep Research heading; all six required ### headings in the order above; direct citations and evidence labels; contradictions/unknowns; a concise recommended next action; a ## Notion Replacement Contract that preserves unrelated content and replaces only the existing Deep Research section; and a final line containing PACKET_COMPLETE. The file, not chat, is the durable handoff.`;
 }
 
-function monitorAction(flowId: string) {
-  return { script: MONITOR_SCRIPT, args: [flowId], env: { OPENCLAW_NOTION_PROFILE: "ntc" } };
+function monitorAction(flowId: string, roots: PathRoots) {
+  return { script: MONITOR_SCRIPT, args: [flowId, roots.stateRoot], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } };
 }
 
-function actionRequired(flow: { flowId: string; revision: number; currentStep?: string }, action: JsonObject) {
-  return { flowId: flow.flowId, revision: flow.revision, status: "action_required", currentStep: flow.currentStep, action, monitor: monitorAction(flow.flowId) };
+function actionRequired(flow: { flowId: string; revision: number; currentStep?: string }, action: JsonObject, roots: PathRoots) {
+  return { flowId: flow.flowId, revision: flow.revision, status: "action_required", currentStep: flow.currentStep, action, monitor: monitorAction(flow.flowId, roots) };
 }
 
 export default defineToolPlugin({
   id: "kranz-coordinator",
   name: "Kranz Coordinator",
   description: "Run and inspect the durable Kranz NTC research controller.",
+  configSchema: PluginConfigSchema,
   tools: (tool) => [
     tool({
       name: "kranz_flow_start",
       description: "Create a durable Kranz NTC research TaskFlow for the current owner session.",
       parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }),
-      factory({ api, toolContext }) {
+      factory({ api, toolContext, config }) {
         const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
         return { name: "kranz_flow_start", label: "Start Kranz Flow", description: "Create a durable Kranz NTC research TaskFlow for the current owner session.", parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }), executionMode: "sequential" as const,
-          async execute(_id: string, params: Record<string, unknown>) { return result(flows.createManaged({ controllerId: CONTROLLER_ID, goal: String(params.goal), status: "running", currentStep: normalizeStep(params.currentStep == null ? undefined : String(params.currentStep)), stateJson: parseState(String(params.stateJson)) })); } };
+          async execute(_id: string, params: Record<string, unknown>) {
+            const state = parseState(String(params.stateJson));
+            const roots = resolvePathRoots(config, state);
+            return result(flows.createManaged({ controllerId: CONTROLLER_ID, goal: String(params.goal), status: "running", currentStep: normalizeStep(params.currentStep == null ? undefined : String(params.currentStep)), stateJson: { ...state, ...roots } }));
+          } };
       },
     }),
     tool({
@@ -218,7 +248,7 @@ export default defineToolPlugin({
       name: "kranz_flow_tick",
       description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.",
       parameters: Type.Object({ flowId: Type.String() }),
-      factory({ api, toolContext }) {
+      factory({ api, toolContext, config }) {
         const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
         return { name: "kranz_flow_tick", label: "Tick Kranz Flow", description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.", parameters: Type.Object({ flowId: Type.String() }), executionMode: "sequential" as const,
           async execute(_id: string, p: Record<string, unknown>) {
@@ -231,13 +261,20 @@ export default defineToolPlugin({
             }
             const step = normalizeStep(flow.currentStep);
             let state = asObject(flow.stateJson);
+            const roots = resolvePathRoots(config, state);
+            if (state.stateRoot !== roots.stateRoot || state.artifactRoot !== roots.artifactRoot) {
+              const migration = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: normalizeStep(flow.currentStep), stateJson: { ...state, ...roots } });
+              if (!migration.applied) return result({ status: "revision_conflict", mutation: migration });
+              flow = migration.flow;
+              state = asObject(flow.stateJson);
+            }
             const queue = queueFrom(state);
             const index = Number(state.currentIndex ?? 0);
             if (!Number.isInteger(index) || index < 0) throw new Error("stateJson.currentIndex must be a non-negative integer");
             const record = queue[index];
-            if (!record) return result({ found: true, status: "batch_complete", mutation: flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...state, completedAt: new Date().toISOString() } }), monitor: monitorAction(flowId) });
+            if (!record) return result({ found: true, status: "batch_complete", mutation: flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...state, completedAt: new Date().toISOString() } }), monitor: monitorAction(flowId, roots) });
             state = withCurrent(state, record, index);
-            const artifactPath = artifactPathFor(record), contextPath = contextPathFor(record), receiptPath = receiptPathFor(record);
+            const artifactPath = artifactPathFor(record, roots), contextPath = contextPathFor(record, roots), receiptPath = receiptPathFor(record, roots);
             let artifact = inspectDossier(artifactPath, record.pageId, record.name);
 
             if (step === Steps.SELECT_RECORD) {
@@ -246,7 +283,7 @@ export default defineToolPlugin({
                 if (!m.applied) return result({ status: "revision_conflict", mutation: m }); flow = m.flow; state = asObject(flow.stateJson);
               } else {
                 const context = readContext(contextPath, record.pageId);
-                if (!context.ok) return result(actionRequired(flow, { kind: "read_page", pageId: record.pageId, prospect: record.name, outputPath: contextPath, script: PAGE_READER_SCRIPT, args: [record.pageId, contextPath], env: { OPENCLAW_NOTION_PROFILE: "ntc" } }));
+                if (!context.ok) return result(actionRequired(flow, { kind: "read_page", pageId: record.pageId, prospect: record.name, outputPath: contextPath, script: PAGE_READER_SCRIPT, args: [record.pageId, contextPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } }, roots));
                 const m = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.DISPATCH_RESEARCH, stateJson: { ...state, pageContext: { path: contextPath, readAt: context.readAt ?? "unknown" } } });
                 if (!m.applied) return result({ status: "revision_conflict", mutation: m }); flow = m.flow; state = asObject(flow.stateJson);
               }
@@ -260,11 +297,11 @@ export default defineToolPlugin({
                 const nextIndex = index + 1, next = queue[nextIndex];
                 const nextState: JsonObject = { ...state, blockedRecords: blocked, currentIndex: nextIndex, child: null, artifact: null, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
                 const mutation = next ? flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState }) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
-                return result({ status: "record_blocked", pageId: record.pageId, mutation, monitor: monitorAction(flowId) });
+                return result({ status: "record_blocked", pageId: record.pageId, mutation, monitor: monitorAction(flowId, roots) });
               }
               const runId = `kranz:${flowId}:${record.pageId}:attempt:${attempt}`;
               const childSessionKey = `agent:${MCCLINTOCK_AGENT_ID}:kranz-${flowId}-${record.pageId}-${attempt}`;
-              const outcomePath = outcomePathFor(record, attempt);
+              const outcomePath = outcomePathFor(record, attempt, roots);
               const prompt = buildResearchPrompt(record, queue.length, contextPath, artifactPath);
               const linked = flows.runTask({ flowId, runtime: "subagent", sourceId: runId, childSessionKey, agentId: MCCLINTOCK_AGENT_ID, runId, label: `McClintock — ${record.name}`, task: prompt, status: "running", startedAt: Date.now(), lastEventAt: Date.now() });
               if (!linked.created && !linked.found) return result({ status: "link_failed", reason: linked.reason, flowId, runId });
@@ -279,7 +316,7 @@ export default defineToolPlugin({
               void api.runtime.agent.runEmbeddedAgent({ sessionId: randomUUID(), sessionKey: childSessionKey, sessionPersistence: "durable", agentId: MCCLINTOCK_AGENT_ID, workspaceDir, bootstrapWorkspaceDir: workspaceDir, isCanonicalWorkspace: true, agentDir, config: cfg, prompt, timeoutMs: 20 * 60 * 1000, runTimeoutOverrideMs: 20 * 60 * 1000, runId, trigger: "manual", spawnedBy: toolContext.sessionKey, sandboxAgentId: MCCLINTOCK_AGENT_ID, disableMessageTool: true, requireExplicitMessageTarget: true })
                 .then(() => writeOutcome(outcomePath, { status: "succeeded", runId, endedAt: new Date().toISOString() }))
                 .catch((error) => writeOutcome(outcomePath, { status: "failed", runId, endedAt: new Date().toISOString(), error: String(error) }));
-              return result({ flowId, revision: waiting.flow.revision, status: "research_dispatched", currentStep: Steps.WAIT_RESEARCH, child: { runId, childSessionKey, attempt }, monitor: monitorAction(flowId) });
+              return result({ flowId, revision: waiting.flow.revision, status: "research_dispatched", currentStep: Steps.WAIT_RESEARCH, child: { runId, childSessionKey, attempt }, monitor: monitorAction(flowId, roots) });
             }
 
             if (normalizeStep(flow.currentStep) === Steps.WAIT_RESEARCH) {
@@ -287,16 +324,16 @@ export default defineToolPlugin({
               const child = asObject(state.child);
               const attempt = Number(child.attempt ?? attemptsFor(state, record.pageId) + 1);
               const runId = String(child.runId ?? "");
-              const outcomePath = String(child.outcomePath ?? outcomePathFor(record, attempt));
+              const outcomePath = String(child.outcomePath ?? outcomePathFor(record, attempt, roots));
               const outcome = readOutcome(outcomePath, runId);
               const startedAtMs = Date.parse(String(child.startedAt ?? ""));
               const stale = Number.isFinite(startedAtMs) && Date.now() - startedAtMs >= CHILD_STALE_MS;
               if (!artifact.ok && (outcome || stale)) {
                 const failure = outcome?.status === "failed" ? outcome.error ?? "research_run_failed" : stale ? "research_run_stale" : `invalid_packet:${artifact.errors.join(",")}`;
                 const mutation = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.DISPATCH_RESEARCH, stateJson: { ...state, retries: { ...asObject(state.retries), [record.pageId]: attempt }, child: { ...child, status: "failed", completedAt: outcome?.endedAt ?? new Date().toISOString(), error: failure, validationErrors: artifact.errors } } });
-                return result({ status: "research_retry_scheduled", pageId: record.pageId, attempt, reason: failure, mutation, monitor: monitorAction(flowId) });
+                return result({ status: "research_retry_scheduled", pageId: record.pageId, attempt, reason: failure, mutation, monitor: monitorAction(flowId, roots) });
               }
-              if (!artifact.ok) return result({ flowId, revision: flow.revision, status: "waiting", currentStep: Steps.WAIT_RESEARCH, waitingFor: asObject(flow.waitJson), artifactErrors: artifact.errors, monitor: monitorAction(flowId) });
+              if (!artifact.ok) return result({ flowId, revision: flow.revision, status: "waiting", currentStep: Steps.WAIT_RESEARCH, waitingFor: asObject(flow.waitJson), artifactErrors: artifact.errors, monitor: monitorAction(flowId, roots) });
               const m = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.VALIDATE_PACKET, stateJson: { ...state, child: { ...child, status: "succeeded", completedAt: outcome?.endedAt ?? new Date().toISOString() }, artifact: { path: artifact.path, sha256: artifact.sha256!, packetComplete: true } } });
               if (!m.applied) return result({ status: "revision_conflict", mutation: m }); flow = m.flow; state = asObject(flow.stateJson);
             }
@@ -306,7 +343,7 @@ export default defineToolPlugin({
               if (!artifact.ok) {
                 const attempt = Number(asObject(state.child).attempt ?? attemptsFor(state, record.pageId) + 1);
                 const mutation = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.DISPATCH_RESEARCH, stateJson: { ...state, retries: { ...asObject(state.retries), [record.pageId]: attempt }, child: { ...asObject(state.child), status: "failed", validationErrors: artifact.errors } } });
-                return result({ status: "research_packet_invalid", pageId: record.pageId, attempt, errors: artifact.errors, mutation, monitor: monitorAction(flowId) });
+                return result({ status: "research_packet_invalid", pageId: record.pageId, attempt, errors: artifact.errors, mutation, monitor: monitorAction(flowId, roots) });
               }
               const m = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.WRITE_NOTION, stateJson: { ...state, artifact: { path: artifact.path, sha256: artifact.sha256!, packetComplete: true, validatedAt: new Date().toISOString() } } });
               if (!m.applied) return result({ status: "revision_conflict", mutation: m }); flow = m.flow; state = asObject(flow.stateJson);
@@ -315,15 +352,15 @@ export default defineToolPlugin({
             if (normalizeStep(flow.currentStep) === Steps.WRITE_NOTION) {
               const hash = String(asObject(state.artifact).sha256 ?? artifact.sha256 ?? "");
               const receipt = readReceipt(receiptPath, record.pageId, hash);
-              if (!receipt) return result(actionRequired(flow, { kind: "publish_notion", pageId: record.pageId, prospect: record.name, artifactPath, artifactSha256: hash, receiptPath, script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc" } }));
+              if (!receipt) return result(actionRequired(flow, { kind: "publish_notion", pageId: record.pageId, prospect: record.name, artifactPath, artifactSha256: hash, receiptPath, script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } }, roots));
               const completed = Array.isArray(state.completedPageIds) ? [...state.completedPageIds] : [];
               if (!completed.includes(record.pageId)) completed.push(record.pageId);
               const nextIndex = index + 1, next = queue[nextIndex];
               const nextState: JsonObject = { ...state, completedPageIds: completed, currentIndex: nextIndex, child: null, artifact: { path: artifactPath, sha256: hash, packetComplete: true }, notionWrite: { pageId: record.pageId, artifactSha256: hash, verified: true, status: "Deep Research", verifiedAt: receipt.verifiedAt ?? new Date().toISOString() }, readBackVerification: receipt.readBack ?? { verified: true }, lastVerifiedAt: receipt.verifiedAt ?? new Date().toISOString(), lastCompletedRecord: { pageId: record.pageId, name: record.name, position: record.position }, ...(next ? { currentPageId: next.pageId, currentProspect: next.name, currentPosition: next.position } : {}) };
               const mutation = next ? flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState }) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
-              return result({ status: next ? "record_complete" : "batch_complete", completed: { pageId: record.pageId, name: record.name }, next: next ?? null, mutation, monitor: monitorAction(flowId) });
+              return result({ status: next ? "record_complete" : "batch_complete", completed: { pageId: record.pageId, name: record.name }, next: next ?? null, mutation, monitor: monitorAction(flowId, roots) });
             }
-            return result({ flowId, revision: flow.revision, status: "no_transition", currentStep: flow.currentStep, monitor: monitorAction(flowId) });
+            return result({ flowId, revision: flow.revision, status: "no_transition", currentStep: flow.currentStep, monitor: monitorAction(flowId, roots) });
           } };
       },
     }),

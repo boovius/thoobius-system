@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { resolveNtcStateRoot } from "./lib/ntc-paths.mjs";
 
 const profile = process.env.OPENCLAW_NOTION_PROFILE;
 if (profile !== "ntc") throw new Error("OPENCLAW_NOTION_PROFILE must be ntc");
@@ -8,7 +9,7 @@ const token = process.env.NTC_NOTION_API_KEY;
 if (!token) throw new Error("Protected NTC Notion credential is unavailable");
 
 const notionVersion = "2026-03-11";
-const outputDir = "/home/boovius/.openclaw/workspace/agents/kranz-coordinator/.ntc-state";
+const outputDir = resolveNtcStateRoot(process.argv[2]);
 const outputPath = path.join(outputDir, "queue-inspection.json");
 
 async function notion(endpoint, init = {}) {

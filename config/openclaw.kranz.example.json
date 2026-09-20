@@ -1,0 +1,39 @@
+{
+  "agents": {
+    "entries": {
+      "kranz-coordinator": {
+        "workspace": "/home/boovius/.openclaw/workspace/agents/kranz-coordinator",
+        "model": {
+          "primary": "anthropic/claude-sonnet-5",
+          "fallbacks": [
+            "anthropic/claude-haiku-4-5-20251001"
+          ]
+        },
+        "tools": {
+          "alsoAllow": [
+            "kranz-coordinator"
+          ]
+        }
+      },
+      "mcclintock-deep-opus": {
+        "workspace": "/home/boovius/.openclaw/workspace/agents/mcclintock-deep-opus",
+        "model": "anthropic/claude-opus-5"
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "kranz-coordinator": {
+        "enabled": true,
+        "config": {
+          "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state"
+        }
+      }
+    },
+    "load": {
+      "paths": [
+        "/home/boovius/.openclaw/workspace/plugins/kranz-coordinator"
+      ]
+    }
+  }
+}

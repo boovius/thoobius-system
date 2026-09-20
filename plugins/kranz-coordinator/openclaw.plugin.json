@@ -2,10 +2,19 @@
   "id": "kranz-coordinator",
   "name": "Kranz Coordinator",
   "description": "Run and inspect the durable Kranz NTC research controller.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "configSchema": {
     "type": "object",
-    "properties": {},
+    "properties": {
+      "stateRoot": {
+        "type": "string",
+        "description": "Shared NTC runtime-state root. Relative paths resolve from the shared workspace."
+      },
+      "artifactRoot": {
+        "type": "string",
+        "description": "Durable research-artifact root. Defaults to <stateRoot>/artifacts."
+      }
+    },
     "additionalProperties": false
   },
   "activation": {

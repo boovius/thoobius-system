@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { resolveNtcOutputPath, resolveNtcStateRoot } from "./lib/ntc-paths.mjs";
 
 if (process.env.OPENCLAW_NOTION_PROFILE !== "ntc") throw new Error("OPENCLAW_NOTION_PROFILE must be ntc");
 const token = process.env.NTC_NOTION_API_KEY;
@@ -60,10 +61,8 @@ const page = await notion(`/pages/${pageId}`);
 const body = await children(pageId);
 const properties = Object.fromEntries(Object.entries(page.properties ?? {}).map(([name, value]) => [name, { type: value.type, value: propertyValue(value) }]));
 const context = { readAt: new Date().toISOString(), notionProfile: "ntc", pageId, url: page.url, properties, body };
-const outputDir = "/home/boovius/.openclaw/workspace/agents/kranz-coordinator/.ntc-state";
-const outputPath = requestedOutputPath
-  ? path.resolve(requestedOutputPath)
-  : `${outputDir}/current-page-context.json`;
+const stateRoot = resolveNtcStateRoot();
+const outputPath = resolveNtcOutputPath(requestedOutputPath, `page-context/${pageId}.json`, stateRoot);
 await mkdir(path.dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(context, null, 2)}\n`, { mode: 0o600 });
 process.stdout.write(`${JSON.stringify({ ...context, outputPath }, null, 2)}\n`);

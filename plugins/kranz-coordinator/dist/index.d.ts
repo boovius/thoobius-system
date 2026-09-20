@@ -1,3 +1,9 @@
+type JsonValue = null | boolean | number | string | JsonValue[] | {
+    [key: string]: JsonValue;
+};
+type JsonObject = {
+    [key: string]: JsonValue;
+};
 type QueueRecord = {
     position: number;
     pageId: string;
@@ -11,10 +17,19 @@ type ArtifactInspection = {
     sha256?: string;
     errors: string[];
 };
-export declare function artifactPathFor(record: QueueRecord): string;
-export declare function contextPathFor(record: QueueRecord): string;
-export declare function receiptPathFor(record: QueueRecord): string;
-export declare function outcomePathFor(record: QueueRecord, attempt: number): string;
+type PluginConfig = {
+    stateRoot?: string;
+    artifactRoot?: string;
+};
+type PathRoots = {
+    stateRoot: string;
+    artifactRoot: string;
+};
+export declare function resolvePathRoots(config?: PluginConfig, state?: JsonObject): PathRoots;
+export declare function artifactPathFor(record: QueueRecord, roots?: PathRoots): string;
+export declare function contextPathFor(record: QueueRecord, roots?: PathRoots): string;
+export declare function receiptPathFor(record: QueueRecord, roots?: PathRoots): string;
+export declare function outcomePathFor(record: QueueRecord, attempt: number, roots?: PathRoots): string;
 export declare function inspectDossier(artifactPath: string, pageId: string, prospect?: string): ArtifactInspection;
 declare const _default: import("openclaw/plugin-sdk/tool-plugin").DefinedToolPluginEntry;
 export default _default;

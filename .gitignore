@@ -2,6 +2,7 @@
 .openclaw/
 .clawhub/
 state/
+.ntc-state/
 
 # Nested repos / large embedded projects
 flow-do/

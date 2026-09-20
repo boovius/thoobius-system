@@ -1,16 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
+import { resolveNtcOutputPath, resolveNtcStateRoot, resolveWorkspacePath } from "./lib/ntc-paths.mjs";
 
 if (process.env.OPENCLAW_NOTION_PROFILE !== "ntc") throw new Error("OPENCLAW_NOTION_PROFILE must be ntc");
 const token = process.env.NTC_NOTION_API_KEY;
 if (!token) throw new Error("Protected NTC Notion credential is unavailable");
 
 const pageId = process.argv[2];
-const artifactPath = process.argv[3];
-const receiptPath = process.argv[4];
+const requestedArtifactPath = process.argv[3];
+const requestedReceiptPath = process.argv[4];
 if (!/^[0-9a-f-]{32,36}$/i.test(pageId ?? "")) throw new Error("Valid page ID required");
-if (!artifactPath) throw new Error("Artifact path required");
+if (!requestedArtifactPath) throw new Error("Artifact path required");
+const stateRoot = resolveNtcStateRoot();
+const artifactPath = resolveWorkspacePath(requestedArtifactPath, requestedArtifactPath);
+const receiptPath = resolveNtcOutputPath(requestedReceiptPath, `publication-receipts/${pageId}.json`, stateRoot);
 
 async function notion(endpoint, init = {}) {
   const response = await fetch(`https://api.notion.com/v1${endpoint}`, {
@@ -158,9 +162,6 @@ const receipt = {
   status: finalStatus,
   verifiedAt: new Date().toISOString(),
 };
-if (receiptPath) {
-  const resolvedReceiptPath = path.resolve(receiptPath);
-  await mkdir(path.dirname(resolvedReceiptPath), { recursive: true });
-  await writeFile(resolvedReceiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
-}
-process.stdout.write(`${JSON.stringify({ ...receipt, receiptPath: receiptPath ? path.resolve(receiptPath) : null }, null, 2)}\n`);
+await mkdir(path.dirname(receiptPath), { recursive: true });
+await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+process.stdout.write(`${JSON.stringify({ ...receipt, receiptPath }, null, 2)}\n`);
