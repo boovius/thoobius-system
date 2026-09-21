@@ -12,9 +12,11 @@ const DEFAULT_STATE_ROOT = path.join(WORKSPACE_ROOT, ".ntc-state");
 const WRITER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-write-deep-research.mjs";
 const PAGE_READER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs";
 const MONITOR_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-monitor-sync.mjs";
+const KRANZ_OWNER_SESSION_KEY = "agent:kranz-coordinator:main";
 const PluginConfigSchema = Type.Object({
     stateRoot: Type.Optional(Type.String({ description: "Shared NTC runtime-state root. Relative paths resolve from the shared workspace." })),
     artifactRoot: Type.Optional(Type.String({ description: "Durable research-artifact root. Defaults to <stateRoot>/artifacts." })),
+    ownerSessionKey: Type.Optional(Type.Literal(KRANZ_OWNER_SESSION_KEY, { description: "Stable TaskFlow owner shared by Kranz main and scheduled callers." })),
 }, { additionalProperties: false });
 const JsonText = Type.String({ description: "A JSON-encoded object used as the complete persisted TaskFlow state." });
 const Steps = {
@@ -45,6 +47,15 @@ function asObject(value) {
 }
 function result(details) {
     return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+}
+export function bindManagedFlows(managedFlows, toolContext, config = {}) {
+    const ownerSessionKey = config.ownerSessionKey?.trim();
+    if (!ownerSessionKey)
+        return managedFlows.fromToolContext(toolContext);
+    if (ownerSessionKey !== KRANZ_OWNER_SESSION_KEY) {
+        throw new Error(`Kranz ownerSessionKey must be exactly ${KRANZ_OWNER_SESSION_KEY}`);
+    }
+    return managedFlows.bindSession({ sessionKey: ownerSessionKey });
 }
 function slug(value) {
     return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
@@ -279,7 +290,7 @@ export default defineToolPlugin({
             description: "Create a durable Kranz NTC research TaskFlow for the current owner session.",
             parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }),
             factory({ api, toolContext, config }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_start", label: "Start Kranz Flow", description: "Create a durable Kranz NTC research TaskFlow for the current owner session.", parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }), executionMode: "sequential",
                     async execute(_id, params) {
                         const state = parseState(String(params.stateJson));
@@ -292,8 +303,8 @@ export default defineToolPlugin({
             name: "kranz_flow_link_task",
             description: "Link an already-launched McClintock child task to a Kranz TaskFlow.",
             parameters: Type.Object({ flowId: Type.String(), childSessionKey: Type.String(), runId: Type.String(), label: Type.String(), task: Type.String() }),
-            factory({ api, toolContext }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+            factory({ api, toolContext, config }) {
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_link_task", label: "Link McClintock Task", description: "Link an already-launched McClintock child task to a Kranz TaskFlow.", parameters: Type.Object({ flowId: Type.String(), childSessionKey: Type.String(), runId: Type.String(), label: Type.String(), task: Type.String() }), executionMode: "sequential",
                     async execute(_id, p) { return result(flows.runTask({ flowId: String(p.flowId), runtime: "subagent", agentId: MCCLINTOCK_AGENT_ID, childSessionKey: String(p.childSessionKey), runId: String(p.runId), label: String(p.label), task: String(p.task), status: "running", startedAt: Date.now(), lastEventAt: Date.now() })); } };
             },
@@ -302,8 +313,8 @@ export default defineToolPlugin({
             name: "kranz_flow_checkpoint",
             description: "Persist a Kranz TaskFlow checkpoint with revision checking.",
             parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), disposition: Type.Union([Type.Literal("running"), Type.Literal("waiting"), Type.Literal("succeeded"), Type.Literal("failed")]), currentStep: Type.Optional(Type.String()), stateJson: JsonText, summary: Type.Optional(Type.String()) }),
-            factory({ api, toolContext }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+            factory({ api, toolContext, config }) {
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_checkpoint", label: "Checkpoint Kranz Flow", description: "Persist a Kranz TaskFlow checkpoint with optimistic revision checking.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), disposition: Type.Union([Type.Literal("running"), Type.Literal("waiting"), Type.Literal("succeeded"), Type.Literal("failed")]), currentStep: Type.Optional(Type.String()), stateJson: JsonText, summary: Type.Optional(Type.String()) }), executionMode: "sequential",
                     async execute(_id, p) {
                         const base = { flowId: String(p.flowId), expectedRevision: Number(p.expectedRevision), stateJson: parseState(String(p.stateJson)), currentStep: p.currentStep == null ? undefined : String(p.currentStep) };
@@ -321,8 +332,8 @@ export default defineToolPlugin({
             name: "kranz_flow_set_run_scope",
             description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.",
             parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }),
-            factory({ api, toolContext }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+            factory({ api, toolContext, config }) {
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_set_run_scope", label: "Set Kranz Run Scope", description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
@@ -356,7 +367,7 @@ export default defineToolPlugin({
             description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.",
             parameters: Type.Object({ flowId: Type.String() }),
             factory({ api, toolContext, config }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_tick", label: "Tick Kranz Flow", description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.", parameters: Type.Object({ flowId: Type.String() }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
@@ -519,7 +530,7 @@ export default defineToolPlugin({
             description: "Execute only the protected NTC Notion action implied by the current flow revision.",
             parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }),
             factory({ api, toolContext, config }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_execute_pending_action", label: "Execute Kranz Notion Action", description: "Execute only the protected NTC Notion action implied by the current flow revision.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
@@ -560,7 +571,7 @@ export default defineToolPlugin({
             description: "Sync the human-readable Notion monitor for one exact flow revision through the protected Gateway.",
             parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }),
             factory({ api, toolContext, config }) {
-                const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext);
+                const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
                 return { name: "kranz_flow_sync_monitor", label: "Sync Kranz Monitor", description: "Sync the human-readable Notion monitor for one exact flow revision through the protected Gateway.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number() }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
@@ -588,7 +599,7 @@ export default defineToolPlugin({
         }),
         tool({
             name: "kranz_flow_status", description: "Inspect a Kranz TaskFlow and its linked-task summary.", parameters: Type.Object({ flowId: Type.Optional(Type.String()) }),
-            factory({ api, toolContext }) { const flows = api.runtime.tasks.managedFlows.fromToolContext(toolContext); return { name: "kranz_flow_status", label: "Inspect Kranz Flow", description: "Inspect the named or latest Kranz TaskFlow and linked-task summary.", parameters: Type.Object({ flowId: Type.Optional(Type.String()) }), async execute(_id, p) { const flow = p.flowId ? flows.get(String(p.flowId)) : flows.findLatest(); return result(flow ? { found: true, flow, taskSummary: flows.getTaskSummary(flow.flowId) } : { found: false }); } }; },
+            factory({ api, toolContext, config }) { const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config); return { name: "kranz_flow_status", label: "Inspect Kranz Flow", description: "Inspect the named or latest Kranz TaskFlow and linked-task summary.", parameters: Type.Object({ flowId: Type.Optional(Type.String()) }), async execute(_id, p) { const flow = p.flowId ? flows.get(String(p.flowId)) : flows.findLatest(); return result(flow ? { found: true, flow, taskSummary: flows.getTaskSummary(flow.flowId) } : { found: false }); } }; },
         }),
     ],
 });

@@ -65,6 +65,18 @@ For each managed flow:
 
 The selected absolute paths are persisted in TaskFlow state. Paths outside the shared workspace are rejected.
 
+## Stable TaskFlow owner
+
+Set `plugins.entries.kranz-coordinator.config.ownerSessionKey` to exactly:
+
+```text
+agent:kranz-coordinator:main
+```
+
+Every Kranz tool then uses `managedFlows.bindSession(...)` for that owner instead of deriving ownership from the caller. Interactive Kranz calls and ephemeral automation sessions therefore read and revision-check the same durable flow. The plugin rejects any other configured owner key; the value is operator configuration and is never accepted as a tool-call parameter.
+
+If the setting is omitted, the plugin retains caller-scoped behavior for compatibility.
+
 ## Dispatch and Notion authority
 
 - Kranz is configured with `subagents.allowAgents: ["mcclintock-deep-opus"]`; no other child agent is allowed.
@@ -72,6 +84,8 @@ The selected absolute paths are persisted in TaskFlow state. Paths outside the s
 - `kranz_flow_execute_pending_action(flowId, expectedRevision)` derives and revision-locks the only permitted page read or publication from TaskFlow state, then verifies its context or receipt. It does not accept arbitrary page ids, scripts, paths, properties, or Notion operations.
 - `kranz_flow_sync_monitor(flowId, expectedRevision)` applies the same authorize/verify handshake to only the known NTC monitor projection.
 - The deterministic scheduler passes only plugin-authorized actions to Gateway-hosted exec, where `NTC_NOTION_API_KEY` remains an opaque egress sentinel restricted to `api.notion.com`.
+- The scheduled payload is the checked-in `plugins/kranz-coordinator/cron-tick.js`, not a natural-language `agentTurn`. It fails if the configured flow is invisible and removes its own uniquely named automation after terminal scope completion.
+- Completion delivery must name the Telegram channel and destination explicitly; waiting ticks return no notification.
 
 ## Requested run scope
 

@@ -65,9 +65,24 @@ Complete this step when the next selected record is active, the requested scope 
 ## Detached execution and reporting
 
 1. Run in Kranz's durable session and release the main conversation after admission; register completion watching or an equivalent continuation first.
-2. Report current-scope progress as `handled / selected` and queue progress as `verified / total`, plus blocked count and next entry.
-3. Send exceptions for retries, validation failures, protected-action failures, authentication or quota trouble, or human decisions; preserve the checkpoint.
-4. Send a final scope summary with selected and handled counts, verified and blocked totals, TaskFlow revision, and next queued record or terminal state.
-5. Say `running` only when an active linked task or scheduled continuation exists. Distinguish research complete, write complete, verified, checkpointed, and scope complete.
-6. Treat the Notion monitor as a human-readable projection, not the source of truth.
-7. Never perform outreach or infer permission to change statuses beyond the verified `Deep Research` transition.
+2. Bind detached continuation tool calls to the durable flow owner's session instead of the fresh scheduled-run session. Use the source-controlled deterministic bounded controller rather than a natural-language agent turn, and test that the first scheduled execution resolves the same TaskFlow and revision before promising unattended completion.
+3. Diagnose a stalled continuation in four layers: confirm the schedule fired, confirm the payload executed, confirm the execution context resolved the owner-scoped flow, then confirm completion or failure delivery reached its explicit destination. Treat `found: false` with a healthy owner-session lookup as a session-ownership mismatch, not lost flow data or workflow progress.
+4. Configure an explicit delivery channel and recipient for completion and failure reports, and ensure terminal `run_scope_complete` disables the continuation through an admitted scheduler-control path.
+5. If inter-session delivery reports an embedded tool-authority registration mismatch, stop retrying or resetting that route. Invoke the supported Gateway local agent runner against the same durable Kranz session, then require admission proof before saying the run is active.
+6. When a linked child appears active past its expected completion, inspect the child result and durable artifact directly. If the artifact is complete but the flow remains at `WAIT_RESEARCH`, reconcile the child handoff into the flow before retrying research or reporting completion.
+7. Report current-scope progress as `handled / selected` and queue progress as `verified / total`, plus blocked count and next entry.
+8. Send exceptions for retries, validation failures, protected-action failures, authentication or quota trouble, or human decisions; preserve the checkpoint.
+9. Send a final scope summary with selected and handled counts, verified and blocked totals, TaskFlow revision, and next queued record or terminal state.
+10. Say `running` only when an active linked task or scheduled continuation exists. Distinguish research complete, write complete, verified, checkpointed, and scope complete.
+11. Treat the Notion monitor as a human-readable projection, not the source of truth.
+12. Never perform outreach or infer permission to change statuses beyond the verified `Deep Research` transition.
+
+## Audit and centralize workflow source
+
+1. When asked whether the workflow is in GitHub, inspect the canonical workflow repository, nested agent repositories, live OpenClaw configuration, automation inventory, and shared runtime-state directory separately; do not infer publication from the presence of local files.
+2. Classify every component as pushed and tracked, tracked but unpushed, untracked source/configuration, or runtime-only state. Include the exact repository, branch or commit, and path for inspectable source.
+3. Centralize reviewable workflow code in the workflow repository: coordinator plugin source/tests, deterministic scheduler payload, protected Notion helper scripts, sanitized agent definitions, sanitized configuration examples, automation declarations, skills, and operating documentation.
+4. Exclude credentials, live secret-bearing configuration, TaskFlow/SQLite databases, agent memories, queue state, page contexts, publication receipts, generated dossiers, and research outcomes. Represent required secrets only by protected-secret names, allowed hosts, and setup documentation.
+5. Verify the remote branch contains the committed files before saying the workflow is centralized; report any local-only or runtime-only components explicitly.
+
+Complete this audit only when the user can identify one canonical GitHub location for source and can see a precise list of intentionally excluded runtime data.

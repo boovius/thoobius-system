@@ -1,4 +1,5 @@
 const FLOW_ID = "84e4b348-57e5-4729-b171-e6f98a891dc9";
+const AUTOMATION_NAME = "Kranz deterministic NTC continuation";
 const WORKDIR = "/home/boovius/.openclaw/workspace";
 const ALLOWED_SCRIPTS = new Set([
   "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs",
@@ -7,6 +8,7 @@ const ALLOWED_SCRIPTS = new Set([
 ]);
 
 function detailsOf(value) {
+  if (value && typeof value === "object" && value.result) return detailsOf(value.result);
   if (value && typeof value === "object" && value.details) return value.details;
   if (value && typeof value === "object" && Array.isArray(value.content)) {
     const text = value.content.find((item) => item?.type === "text")?.text;
@@ -14,6 +16,19 @@ function detailsOf(value) {
   }
   if (typeof value === "string") return JSON.parse(value);
   return value;
+}
+
+const TOOL_CALLS = new Map();
+
+async function callTool(name, args) {
+  let invoke = TOOL_CALLS.get(name);
+  if (!invoke) {
+    const hits = await catalog.search(name, { limit: 10 });
+    invoke = hits.find((hit) => hit?.callableName === name || hit?.toolName === name);
+    if (!invoke) throw new Error(`Required Kranz automation tool is unavailable: ${name}`);
+    TOOL_CALLS.set(name, invoke);
+  }
+  return detailsOf(await invoke(args));
 }
 
 function shellArg(value) {
@@ -25,37 +40,49 @@ async function runAuthorizedGatewayAction(authorization, title) {
   const action = authorization.action;
   if (!action || !ALLOWED_SCRIPTS.has(action.script)) throw new Error(`Refusing unrecognized Kranz action: ${action?.script ?? "missing"}`);
   const command = ["node", action.script, ...(action.args ?? [])].map(shellArg).join(" ");
-  return tools.openclaw__gateway_exec({
+  return callTool("exec", {
     command,
     workdir: WORKDIR,
     env: action.env ?? { OPENCLAW_NOTION_PROFILE: "ntc" },
     title,
+    host: "gateway",
     timeoutSeconds: 180,
     yieldMs: 10000,
   });
 }
 
+async function stopCurrentAutomation() {
+  const listing = await callTool("automations", { action: "list" });
+  const jobs = Array.isArray(listing?.jobs) ? listing.jobs : [];
+  const matches = jobs.filter((job) => job?.name === AUTOMATION_NAME);
+  if (matches.length !== 1 || !matches[0]?.id) {
+    throw new Error(`Cannot identify the current Kranz automation safely: found ${matches.length}`);
+  }
+  await callTool("automations", { action: "remove", jobId: matches[0].id });
+}
+
 let lastTick;
 for (let transition = 0; transition < 6; transition += 1) {
-  lastTick = detailsOf(await tools.kranz_flow_tick({ flowId: FLOW_ID }));
+  lastTick = await callTool("kranz_flow_tick", { flowId: FLOW_ID });
   if (lastTick?.status !== "action_required") break;
-  const authorization = detailsOf(await tools.kranz_flow_execute_pending_action({ flowId: FLOW_ID, expectedRevision: lastTick.revision }));
+  const authorization = await callTool("kranz_flow_execute_pending_action", { flowId: FLOW_ID, expectedRevision: lastTick.revision });
   await runAuthorizedGatewayAction(authorization, authorization.action?.kind === "publish_notion" ? "Publish and verify the current NTC research record" : "Read the current NTC research record");
-  const verification = detailsOf(await tools.kranz_flow_execute_pending_action({ flowId: FLOW_ID, expectedRevision: lastTick.revision }));
+  const verification = await callTool("kranz_flow_execute_pending_action", { flowId: FLOW_ID, expectedRevision: lastTick.revision });
   if (verification?.status !== "action_complete") throw new Error(`Kranz action verification failed: ${verification?.status ?? "missing"}`);
 }
 
 if (lastTick?.status === "action_required") throw new Error("Kranz tick exceeded the protected-action transition budget");
 
-const status = detailsOf(await tools.kranz_flow_status({ flowId: FLOW_ID }));
+const status = await callTool("kranz_flow_status", { flowId: FLOW_ID });
+if (status?.found !== true) throw new Error(`Kranz flow ${FLOW_ID} is not visible from the scheduled owner binding`);
 const flow = status?.flow ?? {};
 
 if (lastTick?.monitor) {
-  const authorization = detailsOf(await tools.kranz_flow_sync_monitor({ flowId: FLOW_ID, expectedRevision: flow.revision }));
+  const authorization = await callTool("kranz_flow_sync_monitor", { flowId: FLOW_ID, expectedRevision: flow.revision });
   if (authorization?.status === "action_authorized") {
     await runAuthorizedGatewayAction(authorization, "Sync the human-readable Kranz run monitor");
   }
-  const verification = detailsOf(await tools.kranz_flow_sync_monitor({ flowId: FLOW_ID, expectedRevision: flow.revision }));
+  const verification = await callTool("kranz_flow_sync_monitor", { flowId: FLOW_ID, expectedRevision: flow.revision });
   if (verification?.status !== "monitor_synced") throw new Error(`Kranz monitor verification failed: ${verification?.status ?? "missing"}`);
 }
 
@@ -75,6 +102,9 @@ if (lastTick?.status === "batch_complete" || flow.status === "succeeded") {
 } else if (lastTick?.status === "record_complete" && completed > 0 && completed % 5 === 0) {
   notify = `Kranz checkpoint: ${completed}/${total} NTC records verified. Next: ${lastTick.next?.name ?? "none"}.`;
 }
+
+const terminalScope = lastTick?.status === "run_scope_complete" || lastTick?.status === "batch_complete" || flow.status === "succeeded";
+if (terminalScope) await stopCurrentAutomation();
 
 return {
   ...(notify ? { notify } : {}),

@@ -13,7 +13,8 @@ Runtime files default to the shared workflow directory `/home/boovius/.openclaw/
       "kranz-coordinator": {
         "enabled": true,
         "config": {
-          "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state"
+          "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state",
+          "ownerSessionKey": "agent:kranz-coordinator:main"
         }
       }
     }
@@ -38,9 +39,11 @@ Before a requested run, call `kranz_flow_set_run_scope` with the exact flow revi
 
 `kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives and authorizes the current page read or verified publication from TaskFlow state, then verifies the resulting context or publication receipt after the protected Gateway executor runs the fixed script. `kranz_flow_sync_monitor` applies the same authorize/verify handshake to the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, or Notion operation from the model.
 
-A five-minute OpenClaw cron job invokes Kranz. When the tick reaches a protected Notion boundary it calls the narrow plugin action tool and ticks again. TaskFlow remains the machine source of truth and the Notion monitor is only a human-readable projection.
+`ownerSessionKey` binds both interactive Kranz calls and ephemeral scheduled calls to the same durable TaskFlow owner. The plugin accepts only the dedicated `agent:kranz-coordinator:main` owner, so callers cannot redirect it into arbitrary session namespaces. TaskFlow revision checks remain the concurrency guard when two callers race.
 
-The deterministic headless scheduler payload lives in `cron-tick.js`. It executes only revision-locked actions returned by Kranz plugin methods through the protected Gateway executor, stops after one record completes, and only emits owner notifications for five-record milestones, blockers, and final completion.
+A four-minute OpenClaw automation invokes Kranz. When the tick reaches a protected Notion boundary it calls the narrow plugin action tool and ticks again. TaskFlow remains the machine source of truth and the Notion monitor is only a human-readable projection.
+
+The deterministic headless scheduler payload lives in `cron-tick.js`. It executes only revision-locked actions returned by Kranz plugin methods through the protected Gateway executor, stays quiet while research is pending, and removes its own uniquely named automation when the requested scope or full batch completes. It only emits owner notifications for five-record milestones, blockers, and final completion.
 
 The controller uses the documented uppercase phases (`SELECT_RECORD`, `DISPATCH_RESEARCH`, `WAIT_RESEARCH`, `VALIDATE_PACKET`, and `WRITE_NOTION`) while accepting the earlier lowercase checkpoint names for in-place migration of the active production flow.
 

@@ -20,6 +20,7 @@ type ArtifactInspection = {
 type PluginConfig = {
     stateRoot?: string;
     artifactRoot?: string;
+    ownerSessionKey?: string;
 };
 type PathRoots = {
     stateRoot: string;
@@ -31,6 +32,12 @@ type GatewayAction = {
     args: string[];
     env: Record<string, string>;
 };
+export declare function bindManagedFlows<T, C>(managedFlows: {
+    bindSession(params: {
+        sessionKey: string;
+    }): T;
+    fromToolContext(context: C): T;
+}, toolContext: C, config?: PluginConfig): T;
 export declare function resolvePathRoots(config?: PluginConfig, state?: JsonObject): PathRoots;
 export declare function artifactPathFor(record: QueueRecord, roots?: PathRoots): string;
 export declare function contextPathFor(record: QueueRecord, roots?: PathRoots): string;

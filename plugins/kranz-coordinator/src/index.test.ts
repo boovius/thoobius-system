@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
+import entry, { artifactPathFor, bindManagedFlows, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +17,37 @@ describe("kranz-coordinator", () => {
       "kranz_flow_sync_monitor",
       "kranz_flow_status",
     ]);
+  });
+
+  it("binds main and cron callers to the configured stable flow owner", () => {
+    const ownerFlows = { owner: "agent:kranz-coordinator:main" };
+    const managedFlows = {
+      bindSession: ({ sessionKey }: { sessionKey: string }) => ({ ...ownerFlows, sessionKey }),
+      fromToolContext: (context: { sessionKey: string }) => ({ owner: context.sessionKey, sessionKey: context.sessionKey }),
+    };
+
+    const main = bindManagedFlows(managedFlows, { sessionKey: "agent:kranz-coordinator:main" }, { ownerSessionKey: "agent:kranz-coordinator:main" });
+    const cron = bindManagedFlows(managedFlows, { sessionKey: "agent:kranz-coordinator:cron:test:run:1" }, { ownerSessionKey: "agent:kranz-coordinator:main" });
+
+    expect(main).toEqual(cron);
+    expect(cron.sessionKey).toBe("agent:kranz-coordinator:main");
+  });
+
+  it("keeps caller-scoped compatibility when no stable owner is configured", () => {
+    const managedFlows = {
+      bindSession: ({ sessionKey }: { sessionKey: string }) => ({ sessionKey }),
+      fromToolContext: (context: { sessionKey: string }) => ({ sessionKey: context.sessionKey }),
+    };
+    expect(bindManagedFlows(managedFlows, { sessionKey: "agent:kranz-coordinator:cron:test" })).toEqual({ sessionKey: "agent:kranz-coordinator:cron:test" });
+  });
+
+  it("rejects redirecting Kranz flows to an arbitrary owner", () => {
+    const managedFlows = {
+      bindSession: ({ sessionKey }: { sessionKey: string }) => ({ sessionKey }),
+      fromToolContext: (context: { sessionKey: string }) => ({ sessionKey: context.sessionKey }),
+    };
+    expect(() => bindManagedFlows(managedFlows, { sessionKey: "agent:kranz-coordinator:main" }, { ownerSessionKey: "agent:other:main" }))
+      .toThrow("must be exactly agent:kranz-coordinator:main");
   });
 
   it("derives a deterministic artifact path", () => {

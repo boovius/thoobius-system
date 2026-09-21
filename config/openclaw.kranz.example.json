@@ -31,7 +31,8 @@
       "kranz-coordinator": {
         "enabled": true,
         "config": {
-          "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state"
+          "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state",
+          "ownerSessionKey": "agent:kranz-coordinator:main"
         }
       }
     },
