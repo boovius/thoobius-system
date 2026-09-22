@@ -8,22 +8,33 @@ function details(value: unknown) {
   return { details: value };
 }
 
-function catalogFor(implementations: Record<string, (args: Record<string, unknown>) => Promise<unknown>>) {
-  return {
-    search: vi.fn(async (name: string) => {
-      const implementation = implementations[name];
-      if (!implementation) return [];
-      return [Object.assign(implementation, { callableName: name, toolName: name })];
-    }),
-  };
+const PARAM_NAMES = [
+  "kranz_flow_tick",
+  "kranz_flow_execute_pending_action",
+  "kranz_flow_status",
+  "kranz_flow_sync_monitor",
+  "openclaw__gateway_exec",
+  "automations",
+];
+
+function runScript(implementations: Partial<Record<(typeof PARAM_NAMES)[number], (args: Record<string, unknown>) => Promise<unknown>>>) {
+  const runner = new AsyncFunction(...PARAM_NAMES, script);
+  const args = PARAM_NAMES.map(
+    (name) => implementations[name as keyof typeof implementations] ?? vi.fn(async () => { throw new Error(`unexpected call: ${name}`); }),
+  );
+  return runner(...args);
 }
 
 describe("deterministic Kranz continuation", () => {
-  it("removes only its uniquely named automation after run-scope completion", async () => {
-    const remove = vi.fn(async () => ({ tool: "automations", result: details({ removed: true }) }));
-    const implementations: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
-      kranz_flow_tick: vi.fn(async () => ({ tool: "kranz_flow_tick", result: details({ status: "run_scope_complete", runScope: { handledPageIds: ["page-1"] } }) })),
-      kranz_flow_status: vi.fn(async () => ({ tool: "kranz_flow_status", result: details({
+  it("calls Kranz tools as direct bare globals, not through a catalog lookup", async () => {
+    const remove = vi.fn(async () => details({ removed: true }));
+    const automations = vi.fn(async (params: Record<string, unknown>) => {
+      if (params.action === "list") return details({ jobs: [{ id: "job-1", name: "Kranz deterministic NTC continuation" }] });
+      return remove();
+    });
+    const result = (await runScript({
+      kranz_flow_tick: vi.fn(async () => details({ status: "run_scope_complete", runScope: { handledPageIds: ["page-1"] } })),
+      kranz_flow_status: vi.fn(async () => details({
         found: true,
         flow: {
           revision: 33,
@@ -31,27 +42,41 @@ describe("deterministic Kranz continuation", () => {
           currentStep: "SELECT_RECORD",
           stateJson: { completedPageIds: ["page-1"], queueSnapshot: [{ pageId: "page-1" }], blockedRecords: [] },
         },
-      }) })),
-      automations: vi.fn(async (params: Record<string, unknown>) => {
-        if (params.action === "list") return { tool: "automations", result: details({ jobs: [{ id: "job-1", name: "Kranz deterministic NTC continuation" }] }) };
-        return remove();
-      }),
-    };
-    const runner = new AsyncFunction("catalog", script);
-    const result = await runner(catalogFor(implementations)) as { notify?: string; state?: { revision?: number } };
+      })),
+      automations,
+    })) as { notify?: string; state?: { revision?: number } };
 
     expect(result.notify).toContain("completed the requested run scope");
     expect(result.state?.revision).toBe(33);
-    expect(implementations.automations).toHaveBeenLastCalledWith({ action: "remove", jobId: "job-1" });
+    expect(automations).toHaveBeenLastCalledWith({ action: "remove", jobId: "job-1" });
     expect(remove).toHaveBeenCalledOnce();
   });
 
   it("fails closed when the scheduled caller cannot see the owner-bound flow", async () => {
-    const implementations: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
-      kranz_flow_tick: vi.fn(async () => ({ tool: "kranz_flow_tick", result: details({ status: "waiting" }) })),
-      kranz_flow_status: vi.fn(async () => ({ tool: "kranz_flow_status", result: details({ found: false }) })),
-    };
-    const runner = new AsyncFunction("catalog", script);
-    await expect(runner(catalogFor(implementations))).rejects.toThrow("is not visible from the scheduled owner binding");
+    await expect(
+      runScript({
+        kranz_flow_tick: vi.fn(async () => details({ status: "waiting" })),
+        kranz_flow_status: vi.fn(async () => details({ found: false })),
+      }),
+    ).rejects.toThrow("is not visible from the scheduled owner binding");
+  });
+
+  it("runs the protected Gateway action through the direct exec global", async () => {
+    const exec = vi.fn(async (_args: Record<string, unknown>) => details({ status: "action_complete" }));
+    await runScript({
+      kranz_flow_tick: vi
+        .fn()
+        .mockResolvedValueOnce(details({ status: "action_required", revision: 5 }))
+        .mockResolvedValueOnce(details({ status: "waiting", revision: 5 })),
+      kranz_flow_execute_pending_action: vi
+        .fn()
+        .mockResolvedValueOnce(details({ status: "action_authorized", action: { kind: "read_page", script: "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs", args: [] } }))
+        .mockResolvedValueOnce(details({ status: "action_complete" })),
+      openclaw__gateway_exec: exec,
+      kranz_flow_status: vi.fn(async () => details({ found: true, flow: { revision: 5, status: "waiting", stateJson: {} } })),
+    });
+
+    expect(exec).toHaveBeenCalledOnce();
+    expect(exec.mock.calls[0][0]).toMatchObject({ workdir: "/home/boovius/.openclaw/workspace" });
   });
 });
