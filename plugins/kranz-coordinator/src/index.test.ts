@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, bindManagedFlows, inspectDossier, outcomePathFor, pendingGatewayAction, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
+import entry, { artifactPathFor, bindManagedFlows, buildControllerWakeMessage, deadlineHasExpired, inspectDossier, migrateNtcControllerState, outcomePathFor, pendingGatewayAction, prepareInitialState, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,6 +114,57 @@ describe("kranz-coordinator", () => {
     expect(selectedPageIdsForRun(state, 2)).toEqual([queueSnapshot[1].pageId, queueSnapshot[3].pageId]);
     expect(selectedPageIdsForRun(state)).toEqual([queueSnapshot[1].pageId, queueSnapshot[3].pageId, queueSnapshot[4].pageId]);
     expect(() => selectedPageIdsForRun(state, 0)).toThrow("positive integer");
+  });
+
+  it.each(["manual", "scheduled"] as const)("freezes the same bounded run scope for a %s start", (triggerSource) => {
+    const queueSnapshot = [
+      { position: 1, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca1", name: "Done" },
+      { position: 2, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca2", name: "Next A" },
+      { position: 3, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca3", name: "Next B" },
+      { position: 4, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8ca4", name: "Later" },
+    ];
+    const prepared = prepareInitialState(
+      { queueSnapshot, currentIndex: 1, completedPageIds: [queueSnapshot[0].pageId] },
+      {},
+      2,
+      triggerSource,
+    );
+    expect(prepared.runScope).toMatchObject({
+      mode: "limited",
+      requestedEntries: 2,
+      selectedPageIds: [queueSnapshot[1].pageId, queueSnapshot[2].pageId],
+    });
+    expect(prepared.startRequest).toMatchObject({ triggerSource, itemLimit: 2 });
+    expect(prepared.currentPageId).toBe(queueSnapshot[1].pageId);
+  });
+
+  it("builds bounded completion and deadline wake instructions", () => {
+    const completion = buildControllerWakeMessage({ flowId: "flow-1", cause: "child_completion", runId: "run-1" });
+    const deadline = buildControllerWakeMessage({ flowId: "flow-1", cause: "deadline", runId: "run-1" });
+    expect(completion).toContain("TaskFlow flow-1");
+    expect(completion).toContain('"cause":"child_completion"');
+    expect(completion).toContain("Child run: run-1");
+    expect(completion).toContain("frozen run scope");
+    expect(deadline).toContain("deadline");
+  });
+
+  it("treats only a reached persisted deadline as expired", () => {
+    const now = Date.parse("2026-09-22T20:20:00.000Z");
+    expect(deadlineHasExpired("2026-09-22T20:20:00.000Z", now)).toBe(true);
+    expect(deadlineHasExpired("2026-09-22T20:21:00.000Z", now)).toBe(false);
+    expect(deadlineHasExpired(undefined, now)).toBe(false);
+  });
+
+  it("adds adapter schema identity without discarding existing flow state", () => {
+    const original = { currentPageId: "page-1", completedPageIds: ["page-0"], custom: { keep: true } };
+    const migrated = migrateNtcControllerState(original);
+    expect(migrated.changed).toBe(true);
+    expect(migrated.state).toEqual({
+      ...original,
+      adapterId: "ntc-deep-research",
+      adapterVersion: 1,
+    });
+    expect(migrateNtcControllerState(migrated.state)).toEqual({ state: migrated.state, changed: false });
   });
 
   it("derives a publication action only for a valid dossier without a verified receipt", () => {

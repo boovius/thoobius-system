@@ -1,8 +1,8 @@
 {
   "id": "kranz-coordinator",
   "name": "Kranz Coordinator",
-  "description": "Run and inspect the durable Kranz NTC research controller.",
-  "version": "0.7.1",
+  "description": "Run and inspect the durable event-driven NTC research controller.",
+  "version": "0.8.0",
   "configSchema": {
     "type": "object",
     "properties": {

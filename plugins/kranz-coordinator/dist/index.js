@@ -1,8 +1,10 @@
-import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import { createDeadlineTag, createDispatchId, deadlineAt, freezeRunScope, normalizeItemLimit, } from "@thoobius/workflow-controller-core";
+import { artifactPathFor as ntcArtifactPathFor, contextPathFor as ntcContextPathFor, inspectDossier, outcomePathFor as ntcOutcomePathFor, receiptPathFor as ntcReceiptPathFor, } from "./ntc-adapter.js";
+import { createSessionTurnDeadlinePort, scheduleImmediateControllerWake } from "./openclaw-supervision.js";
 const CONTROLLER_ID = "kranz/ntc-deep-research";
 const MCCLINTOCK_AGENT_ID = "mcclintock-deep-opus";
 const MAX_RESEARCH_ATTEMPTS = 2;
@@ -13,12 +15,20 @@ const WRITER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-write-deep-
 const PAGE_READER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs";
 const MONITOR_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-monitor-sync.mjs";
 const KRANZ_OWNER_SESSION_KEY = "agent:kranz-coordinator:main";
+const KRANZ_AGENT_ID = "kranz-coordinator";
 const PluginConfigSchema = Type.Object({
     stateRoot: Type.Optional(Type.String({ description: "Shared NTC runtime-state root. Relative paths resolve from the shared workspace." })),
     artifactRoot: Type.Optional(Type.String({ description: "Durable research-artifact root. Defaults to <stateRoot>/artifacts." })),
     ownerSessionKey: Type.Optional(Type.Literal(KRANZ_OWNER_SESSION_KEY, { description: "Stable TaskFlow owner shared by Kranz main and scheduled callers." })),
 }, { additionalProperties: false });
 const JsonText = Type.String({ description: "A JSON-encoded object used as the complete persisted TaskFlow state." });
+const StartParameters = Type.Object({
+    goal: Type.String(),
+    stateJson: JsonText,
+    currentStep: Type.Optional(Type.String()),
+    itemLimit: Type.Optional(Type.Integer({ minimum: 1, description: "Number of next eligible records to freeze into this run scope." })),
+    triggerSource: Type.Optional(Type.Union([Type.Literal("manual"), Type.Literal("scheduled")], { description: "Auditable start origin; both use the same controller path." })),
+});
 const Steps = {
     SELECT_RECORD: "SELECT_RECORD",
     DISPATCH_RESEARCH: "DISPATCH_RESEARCH",
@@ -42,6 +52,19 @@ function parseState(value) {
         throw new Error("stateJson must encode a JSON object");
     return parsed;
 }
+export function migrateNtcControllerState(state) {
+    if (state.adapterId === "ntc-deep-research" && state.adapterVersion === 1) {
+        return { state, changed: false };
+    }
+    return {
+        state: {
+            ...state,
+            adapterId: "ntc-deep-research",
+            adapterVersion: 1,
+        },
+        changed: true,
+    };
+}
 function asObject(value) {
     return value && !Array.isArray(value) && typeof value === "object" ? value : {};
 }
@@ -56,9 +79,6 @@ export function bindManagedFlows(managedFlows, toolContext, config = {}) {
         throw new Error(`Kranz ownerSessionKey must be exactly ${KRANZ_OWNER_SESSION_KEY}`);
     }
     return managedFlows.bindSession({ sessionKey: ownerSessionKey });
-}
-function slug(value) {
-    return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }
 function resolveWorkspacePath(value, fallback) {
     const candidate = value || fallback;
@@ -77,50 +97,18 @@ export function resolvePathRoots(config = {}, state = {}) {
     return { stateRoot, artifactRoot };
 }
 export function artifactPathFor(record, roots = resolvePathRoots()) {
-    return path.join(roots.artifactRoot, `${record.pageId}-${slug(record.name)}.md`);
+    return ntcArtifactPathFor(record, roots);
 }
 export function contextPathFor(record, roots = resolvePathRoots()) {
-    return path.join(roots.stateRoot, "page-context", `${record.pageId}.json`);
+    return ntcContextPathFor(record, roots);
 }
 export function receiptPathFor(record, roots = resolvePathRoots()) {
-    return path.join(roots.stateRoot, "publication-receipts", `${record.pageId}.json`);
+    return ntcReceiptPathFor(record, roots);
 }
 export function outcomePathFor(record, attempt, roots = resolvePathRoots()) {
-    return path.join(roots.stateRoot, "research-outcomes", `${record.pageId}-attempt-${attempt}.json`);
+    return ntcOutcomePathFor(record, attempt, roots);
 }
-export function inspectDossier(artifactPath, pageId, prospect) {
-    if (!existsSync(artifactPath))
-        return { ok: false, path: artifactPath, errors: ["artifact_missing"] };
-    const markdown = readFileSync(artifactPath, "utf8");
-    const errors = [];
-    if (!markdown.includes(pageId))
-        errors.push("page_id_mismatch");
-    if (prospect && !markdown.toLowerCase().includes(prospect.toLowerCase()))
-        errors.push("prospect_mismatch");
-    if (!markdown.includes(artifactPath))
-        errors.push("artifact_path_mismatch");
-    if ((markdown.match(/^## Deep Research$/gm) ?? []).length !== 1)
-        errors.push("deep_research_heading_count");
-    const requiredHeadings = ["Charities", "Beverly Hills", "Race/Run", "Cancer", "Personnel", "Other Background Context"];
-    const headingPositions = requiredHeadings.map((heading) => markdown.indexOf(`### ${heading}`));
-    for (const heading of requiredHeadings) {
-        if (!markdown.includes(`### ${heading}`))
-            errors.push(`missing_heading:${heading}`);
-    }
-    if (headingPositions.every((position) => position >= 0) && headingPositions.some((position, index) => index > 0 && position <= headingPositions[index - 1])) {
-        errors.push("heading_order");
-    }
-    const deepResearch = markdown.slice(markdown.indexOf("## Deep Research"), markdown.indexOf("## Notion Replacement Contract") >= 0 ? markdown.indexOf("## Notion Replacement Contract") : undefined);
-    if (!/https?:\/\//.test(deepResearch))
-        errors.push("citations_missing");
-    if (!/Unresolved|No public evidence found|Contradictions|unknown/i.test(markdown))
-        errors.push("unresolved_items_missing");
-    if (!/^## Notion Replacement Contract$/m.test(markdown))
-        errors.push("replacement_contract_missing");
-    if (!/^PACKET_COMPLETE\s*$/m.test(markdown))
-        errors.push("packet_incomplete");
-    return { ok: errors.length === 0, path: artifactPath, sha256: crypto.createHash("sha256").update(markdown).digest("hex"), errors };
-}
+export { inspectDossier } from "./ntc-adapter.js";
 function readOutcome(outcomePath, runId) {
     if (!existsSync(outcomePath))
         return null;
@@ -188,8 +176,7 @@ function handledIdsFrom(state) {
     return ids;
 }
 export function selectedPageIdsForRun(state, entryLimit) {
-    if (entryLimit !== undefined && (!Number.isSafeInteger(entryLimit) || entryLimit < 1))
-        throw new Error("entryLimit must be a positive integer");
+    normalizeItemLimit(entryLimit);
     const handled = handledIdsFrom(state);
     const index = Number(state.currentIndex ?? 0);
     if (!Number.isInteger(index) || index < 0)
@@ -198,8 +185,68 @@ export function selectedPageIdsForRun(state, entryLimit) {
     return available.slice(0, entryLimit ?? available.length).map((record) => record.pageId);
 }
 function createRunScope(state, entryLimit) {
-    const selectedPageIds = selectedPageIdsForRun(state, entryLimit);
-    return { mode: entryLimit === undefined ? "all_remaining" : "limited", requestedEntries: entryLimit ?? null, selectedPageIds, handledPageIds: [], remainingPageIds: [...selectedPageIds], status: selectedPageIds.length ? "active" : "complete", startedAt: new Date().toISOString(), ...(selectedPageIds.length ? {} : { completedAt: new Date().toISOString() }) };
+    const queue = queueFrom(state);
+    const index = Number(state.currentIndex ?? 0);
+    if (!Number.isInteger(index) || index < 0)
+        throw new Error("stateJson.currentIndex must be a non-negative integer");
+    const frozen = freezeRunScope({
+        records: queue.slice(index).map((record) => ({ id: record.pageId })),
+        handledRecordIds: handledIdsFrom(state),
+        itemLimit: entryLimit,
+    });
+    return {
+        mode: frozen.mode,
+        requestedEntries: frozen.requestedItems,
+        selectedPageIds: frozen.selectedRecordIds,
+        handledPageIds: frozen.handledRecordIds,
+        remainingPageIds: frozen.remainingRecordIds,
+        status: frozen.status,
+        startedAt: frozen.startedAt,
+        ...(frozen.completedAt ? { completedAt: frozen.completedAt } : {}),
+    };
+}
+export function prepareInitialState(state, config, itemLimit, triggerSource = "manual") {
+    const roots = resolvePathRoots(config, state);
+    const runScope = createRunScope(state, itemLimit);
+    const queue = queueFrom(state);
+    const firstPageId = runScope.selectedPageIds[0];
+    const selectedIndex = firstPageId ? queue.findIndex((record) => record.pageId === firstPageId) : Number(state.currentIndex ?? 0);
+    const selected = selectedIndex >= 0 ? queue[selectedIndex] : undefined;
+    return {
+        ...state,
+        ...roots,
+        runScope,
+        startRequest: {
+            triggerSource,
+            itemLimit: itemLimit ?? null,
+            requestedAt: new Date().toISOString(),
+        },
+        ...(selected
+            ? {
+                currentIndex: selectedIndex,
+                currentPageId: selected.pageId,
+                currentProspect: selected.name,
+                currentPosition: selected.position,
+            }
+            : {}),
+    };
+}
+export function buildControllerWakeMessage(params) {
+    const evidence = params.runId ? ` Child run: ${params.runId}.` : "";
+    return [
+        `[Deterministic workflow controller ${params.cause}]`,
+        `Resume TaskFlow ${params.flowId}.${evidence}`,
+        `First call kranz_flow_tick with {"flowId":"${params.flowId}","cause":"${params.cause}"}.`,
+        "Use only the Kranz controller tools and the exact protected action they authorize.",
+        "Advance until the flow is waiting again, the requested run scope is complete, or the flow is terminal.",
+        "Do not select work outside the frozen run scope.",
+    ].join(" ");
+}
+export function deadlineHasExpired(deadlineAtValue, nowMs = Date.now()) {
+    if (typeof deadlineAtValue !== "string")
+        return false;
+    const parsed = Date.parse(deadlineAtValue);
+    return Number.isFinite(parsed) && nowMs >= parsed;
 }
 function scopeAfterHandling(state, pageId) {
     const scope = asObject(state.runScope);
@@ -287,15 +334,17 @@ export default defineToolPlugin({
     tools: (tool) => [
         tool({
             name: "kranz_flow_start",
-            description: "Create a durable Kranz NTC research TaskFlow for the current owner session.",
-            parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }),
+            description: "Create a durable Kranz NTC research TaskFlow through the shared manual-or-scheduled start path.",
+            parameters: StartParameters,
             factory({ api, toolContext, config }) {
                 const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
-                return { name: "kranz_flow_start", label: "Start Kranz Flow", description: "Create a durable Kranz NTC research TaskFlow for the current owner session.", parameters: Type.Object({ goal: Type.String(), stateJson: JsonText, currentStep: Type.Optional(Type.String()) }), executionMode: "sequential",
+                return { name: "kranz_flow_start", label: "Start Kranz Flow", description: "Create a durable Kranz NTC research TaskFlow through the shared manual-or-scheduled start path.", parameters: StartParameters, executionMode: "sequential",
                     async execute(_id, params) {
                         const state = parseState(String(params.stateJson));
-                        const roots = resolvePathRoots(config, state);
-                        return result(flows.createManaged({ controllerId: CONTROLLER_ID, goal: String(params.goal), status: "running", currentStep: normalizeStep(params.currentStep == null ? undefined : String(params.currentStep)), stateJson: { ...state, ...roots } }));
+                        const itemLimit = params.itemLimit === undefined ? undefined : Number(params.itemLimit);
+                        const triggerSource = params.triggerSource === "scheduled" ? "scheduled" : "manual";
+                        const initialState = prepareInitialState(state, config, itemLimit, triggerSource);
+                        return result(flows.createManaged({ controllerId: CONTROLLER_ID, goal: String(params.goal), status: "running", currentStep: normalizeStep(params.currentStep == null ? undefined : String(params.currentStep)), stateJson: initialState }));
                     } };
             },
         }),
@@ -330,11 +379,11 @@ export default defineToolPlugin({
         }),
         tool({
             name: "kranz_flow_set_run_scope",
-            description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.",
-            parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }),
+            description: "Start a manual or scheduled run by freezing the next N eligible queue entries.",
+            parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), itemLimit: Type.Optional(Type.Integer({ minimum: 1 })), entryLimit: Type.Optional(Type.Integer({ minimum: 1, description: "Deprecated alias for itemLimit." })), triggerSource: Type.Optional(Type.Union([Type.Literal("manual"), Type.Literal("scheduled")])) }),
             factory({ api, toolContext, config }) {
                 const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
-                return { name: "kranz_flow_set_run_scope", label: "Set Kranz Run Scope", description: "Select the next N available queue entries, or all remaining entries when no limit is supplied.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), entryLimit: Type.Optional(Type.Integer({ minimum: 1 })) }), executionMode: "sequential",
+                return { name: "kranz_flow_set_run_scope", label: "Start Kranz Run", description: "Start a manual or scheduled run by freezing the next N eligible queue entries.", parameters: Type.Object({ flowId: Type.String(), expectedRevision: Type.Number(), itemLimit: Type.Optional(Type.Integer({ minimum: 1 })), entryLimit: Type.Optional(Type.Integer({ minimum: 1, description: "Deprecated alias for itemLimit." })), triggerSource: Type.Optional(Type.Union([Type.Literal("manual"), Type.Literal("scheduled")])) }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
                         const expectedRevision = Number(p.expectedRevision);
@@ -349,14 +398,18 @@ export default defineToolPlugin({
                             return result({ status: "scope_change_not_safe", flowId, revision: flow.revision, currentStep: flow.currentStep });
                         }
                         const state = asObject(flow.stateJson);
-                        const entryLimit = p.entryLimit === undefined ? undefined : Number(p.entryLimit);
+                        if (p.itemLimit !== undefined && p.entryLimit !== undefined)
+                            throw new Error("Provide itemLimit, not both itemLimit and entryLimit");
+                        const entryLimitValue = p.itemLimit ?? p.entryLimit;
+                        const entryLimit = entryLimitValue === undefined ? undefined : Number(entryLimitValue);
+                        const triggerSource = p.triggerSource === "scheduled" ? "scheduled" : "manual";
                         const runScope = createRunScope(state, entryLimit);
                         if (!runScope.selectedPageIds.length)
                             return result({ status: "no_available_entries", flowId, revision: flow.revision, runScope });
                         const queue = queueFrom(state);
                         const selectedIndex = queue.findIndex((record) => record.pageId === runScope.selectedPageIds[0]);
                         const selectedRecord = queue[selectedIndex];
-                        const scopedState = { ...state, runScope, currentIndex: selectedIndex, currentPageId: selectedRecord.pageId, currentProspect: selectedRecord.name, currentPosition: selectedRecord.position };
+                        const scopedState = { ...state, runScope, startRequest: { triggerSource, itemLimit: entryLimit ?? null, requestedAt: new Date().toISOString() }, currentIndex: selectedIndex, currentPageId: selectedRecord.pageId, currentProspect: selectedRecord.name, currentPosition: selectedRecord.position };
                         const mutation = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: scopedState });
                         return result({ status: mutation.applied ? "run_scope_set" : "revision_conflict", flowId, mutation, runScope });
                     } };
@@ -365,10 +418,10 @@ export default defineToolPlugin({
         tool({
             name: "kranz_flow_tick",
             description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.",
-            parameters: Type.Object({ flowId: Type.String() }),
+            parameters: Type.Object({ flowId: Type.String(), cause: Type.Optional(Type.Union([Type.Literal("normal"), Type.Literal("child_completion"), Type.Literal("deadline")])) }),
             factory({ api, toolContext, config }) {
                 const flows = bindManagedFlows(api.runtime.tasks.managedFlows, toolContext, config);
-                return { name: "kranz_flow_tick", label: "Tick Kranz Flow", description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.", parameters: Type.Object({ flowId: Type.String() }), executionMode: "sequential",
+                return { name: "kranz_flow_tick", label: "Tick Kranz Flow", description: "Advance one Kranz flow idempotently until it waits or needs a protected Gateway action.", parameters: Type.Object({ flowId: Type.String(), cause: Type.Optional(Type.Union([Type.Literal("normal"), Type.Literal("child_completion"), Type.Literal("deadline")])) }), executionMode: "sequential",
                     async execute(_id, p) {
                         const flowId = String(p.flowId);
                         let flow = flows.get(flowId);
@@ -382,8 +435,9 @@ export default defineToolPlugin({
                         const step = normalizeStep(flow.currentStep);
                         let state = asObject(flow.stateJson);
                         const roots = resolvePathRoots(config, state);
-                        if (state.stateRoot !== roots.stateRoot || state.artifactRoot !== roots.artifactRoot) {
-                            const migration = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: normalizeStep(flow.currentStep), stateJson: { ...state, ...roots } });
+                        const schemaMigration = migrateNtcControllerState(state);
+                        if (schemaMigration.changed || state.stateRoot !== roots.stateRoot || state.artifactRoot !== roots.artifactRoot) {
+                            const migration = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: normalizeStep(flow.currentStep), stateJson: { ...schemaMigration.state, ...roots } });
                             if (!migration.applied)
                                 return result({ status: "revision_conflict", mutation: migration });
                             flow = migration.flow;
@@ -444,9 +498,12 @@ export default defineToolPlugin({
                                 const mutation = next ? (updatedScope.status === "complete" ? flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.SELECT_RECORD, stateJson: nextState, waitJson: { kind: "run_scope_complete", handledPageIds: updatedScope.handledPageIds } }) : flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.SELECT_RECORD, stateJson: nextState })) : flows.finish({ flowId, expectedRevision: flow.revision, stateJson: { ...nextState, completedAt: new Date().toISOString() } });
                                 return result({ status: next && updatedScope.status === "complete" ? "run_scope_complete" : "record_blocked", pageId: record.pageId, mutation, runScope: updatedScope, monitor: monitorAction(flowId, roots) });
                             }
-                            const dispatchId = `kranz:${flowId}:${record.pageId}:attempt:${attempt}`;
+                            const dispatchId = createDispatchId({ namespace: "kranz", flowId, recordId: record.pageId, attempt });
                             const requestedSessionKey = `agent:${MCCLINTOCK_AGENT_ID}:kranz-${flowId}-${record.pageId}-${attempt}`;
                             const outcomePath = outcomePathFor(record, attempt, roots);
+                            const startedAt = new Date();
+                            const watchdogTag = createDeadlineTag({ flowId, recordId: record.pageId, attempt });
+                            const watchdogAt = deadlineAt(startedAt, 20 * 60 * 1000);
                             const prompt = buildResearchPrompt(record, queue.length, contextPath, artifactPath);
                             const launched = await api.runtime.subagent.run({
                                 sessionKey: requestedSessionKey,
@@ -458,19 +515,58 @@ export default defineToolPlugin({
                             });
                             const runId = launched.runId;
                             const childSessionKey = launched.sessionKey ?? requestedSessionKey;
-                            const linked = flows.runTask({ flowId, runtime: "subagent", sourceId: dispatchId, childSessionKey, agentId: MCCLINTOCK_AGENT_ID, runId, label: `McClintock — ${record.name}`, task: prompt, status: "running", startedAt: Date.now(), lastEventAt: Date.now() });
+                            const linked = flows.runTask({ flowId, runtime: "subagent", sourceId: dispatchId, childSessionKey, agentId: MCCLINTOCK_AGENT_ID, runId, label: `McClintock — ${record.name}`, task: prompt, status: "running", startedAt: startedAt.getTime(), lastEventAt: startedAt.getTime() });
                             if (!linked.created && !linked.found)
                                 return result({ status: "link_failed", reason: linked.reason, flowId, runId });
                             flow = flows.get(flowId);
-                            const waiting = flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.WAIT_RESEARCH, stateJson: { ...state, child: { dispatchId, runId, childSessionKey, attempt, status: "running", startedAt: new Date().toISOString(), outcomePath }, expectedArtifactPath: artifactPath }, waitJson: { kind: "child_completion", childRunId: runId, childSessionKey, pageId: record.pageId, attempt } });
+                            const waiting = flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.WAIT_RESEARCH, stateJson: { ...state, child: { dispatchId, runId, childSessionKey, attempt, status: "running", startedAt: startedAt.toISOString(), outcomePath }, expectedArtifactPath: artifactPath, deadlineAt: watchdogAt, watchdogTag }, waitJson: { kind: "child_completion", childRunId: runId, childSessionKey, pageId: record.pageId, attempt, deadlineAt: watchdogAt, watchdogTag } });
                             if (!waiting.applied)
                                 return result({ status: "revision_conflict", linked, mutation: waiting });
-                            void api.runtime.subagent.waitForRun({ runId, timeoutMs: 20 * 60 * 1000 })
-                                .then((outcome) => writeOutcome(outcomePath, outcome.status === "ok"
-                                ? { status: "succeeded", runId, endedAt: new Date().toISOString() }
-                                : { status: "failed", runId, endedAt: new Date().toISOString(), error: outcome.error ?? outcome.status }))
-                                .catch((error) => writeOutcome(outcomePath, { status: "failed", runId, endedAt: new Date().toISOString(), error: String(error) }));
-                            return result({ flowId, revision: waiting.flow.revision, status: "research_dispatched", currentStep: Steps.WAIT_RESEARCH, child: { runId, childSessionKey, attempt }, monitor: monitorAction(flowId, roots) });
+                            const ownerSessionKey = config.ownerSessionKey?.trim() || KRANZ_OWNER_SESSION_KEY;
+                            const childIdentity = { dispatchId, runId, childSessionKey, attempt };
+                            const deadlines = createSessionTurnDeadlinePort({
+                                scheduler: api.session.workflow,
+                                sessionKey: ownerSessionKey,
+                                agentId: KRANZ_AGENT_ID,
+                                messageForDeadline: () => buildControllerWakeMessage({ flowId, cause: "deadline", runId }),
+                            });
+                            await deadlines.schedule({ tag: watchdogTag, at: watchdogAt, flowId, child: childIdentity });
+                            void (async () => {
+                                let completionKind = "completion";
+                                try {
+                                    const outcome = await api.runtime.subagent.waitForRun({ runId, timeoutMs: 20 * 60 * 1000 });
+                                    completionKind = outcome.status === "ok" ? "completion" : "failure";
+                                    writeOutcome(outcomePath, outcome.status === "ok"
+                                        ? { status: "succeeded", runId, endedAt: new Date().toISOString() }
+                                        : { status: "failed", runId, endedAt: new Date().toISOString(), error: outcome.error ?? outcome.status });
+                                }
+                                catch (error) {
+                                    completionKind = "failure";
+                                    writeOutcome(outcomePath, { status: "failed", runId, endedAt: new Date().toISOString(), error: String(error) });
+                                }
+                                try {
+                                    await deadlines.cancel(watchdogTag);
+                                }
+                                catch (error) {
+                                    api.logger.warn(`Unable to cancel Kranz watchdog ${watchdogTag}: ${String(error)}`);
+                                }
+                                try {
+                                    await scheduleImmediateControllerWake({
+                                        scheduler: api.session.workflow,
+                                        sessionKey: ownerSessionKey,
+                                        agentId: KRANZ_AGENT_ID,
+                                        flowId,
+                                        child: childIdentity,
+                                        tag: `${watchdogTag}-${completionKind}`,
+                                        message: buildControllerWakeMessage({ flowId, cause: "child_completion", runId }),
+                                        label: `Kranz child ${completionKind} — ${record.name}`,
+                                    });
+                                }
+                                catch (error) {
+                                    api.logger.error(`Unable to schedule Kranz completion wake for ${runId}: ${String(error)}`);
+                                }
+                            })();
+                            return result({ flowId, revision: waiting.flow.revision, status: "research_dispatched", currentStep: Steps.WAIT_RESEARCH, child: { runId, childSessionKey, attempt }, watchdog: { tag: watchdogTag, at: watchdogAt, scheduled: true }, monitor: monitorAction(flowId, roots) });
                         }
                         if (normalizeStep(flow.currentStep) === Steps.WAIT_RESEARCH) {
                             artifact = inspectDossier(artifactPath, record.pageId, record.name);
@@ -480,7 +576,8 @@ export default defineToolPlugin({
                             const outcomePath = String(child.outcomePath ?? outcomePathFor(record, attempt, roots));
                             const outcome = readOutcome(outcomePath, runId);
                             const startedAtMs = Date.parse(String(child.startedAt ?? ""));
-                            const stale = Number.isFinite(startedAtMs) && Date.now() - startedAtMs >= CHILD_STALE_MS;
+                            const deadlineExpired = p.cause === "deadline" && deadlineHasExpired(state.deadlineAt);
+                            const stale = deadlineExpired || (Number.isFinite(startedAtMs) && Date.now() - startedAtMs >= CHILD_STALE_MS);
                             if (!artifact.ok && (outcome || stale)) {
                                 const failure = outcome?.status === "failed" ? outcome.error ?? "research_run_failed" : stale ? "research_run_stale" : `invalid_packet:${artifact.errors.join(",")}`;
                                 const mutation = flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: Steps.DISPATCH_RESEARCH, stateJson: { ...state, retries: { ...asObject(state.retries), [record.pageId]: attempt }, child: { ...child, status: "failed", completedAt: outcome?.endedAt ?? new Date().toISOString(), error: failure, validationErrors: artifact.errors } } });

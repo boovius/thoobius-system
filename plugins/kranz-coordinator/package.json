@@ -1,6 +1,6 @@
 {
   "name": "openclaw-plugin-kranz-coordinator",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -18,6 +18,7 @@
     "openclaw": ">=2026.5.17"
   },
   "dependencies": {
+    "@thoobius/workflow-controller-core": "file:../../packages/workflow-controller-core",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
