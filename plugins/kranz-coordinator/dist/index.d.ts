@@ -9,6 +9,7 @@ type PluginConfig = {
     stateRoot?: string;
     artifactRoot?: string;
     ownerSessionKey?: string;
+    wakeSessionKey?: string;
 };
 type GatewayAction = {
     kind: "read_page" | "publish_notion" | "sync_monitor";
@@ -26,6 +27,10 @@ export declare function bindManagedFlows<T, C>(managedFlows: {
     }): T;
     fromToolContext(context: C): T;
 }, toolContext: C, config?: PluginConfig): T;
+export declare function resolveControllerWakeTarget(config?: PluginConfig): {
+    sessionKey: string;
+    agentId: string;
+};
 export declare function resolvePathRoots(config?: PluginConfig, state?: JsonObject): PathRoots;
 export declare function artifactPathFor(record: QueueRecord, roots?: PathRoots): string;
 export declare function contextPathFor(record: QueueRecord, roots?: PathRoots): string;

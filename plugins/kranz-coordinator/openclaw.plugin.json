@@ -2,7 +2,7 @@
   "id": "kranz-coordinator",
   "name": "Kranz Coordinator",
   "description": "Run and inspect the durable event-driven NTC research controller.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -18,6 +18,14 @@
         "type": "string",
         "const": "agent:kranz-coordinator:main",
         "description": "Stable TaskFlow owner shared by Kranz main and scheduled callers."
+      },
+      "wakeSessionKey": {
+        "type": "string",
+        "enum": [
+          "agent:kranz-coordinator:main",
+          "agent:ntc-controller:main"
+        ],
+        "description": "Stable admitted controller session that receives completion and deadline wakes."
       }
     },
     "additionalProperties": false

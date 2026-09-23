@@ -34,7 +34,7 @@ Complete this step only when the child task is linked and the active record is c
 
 1. Treat child completion as a handoff event, never as run completion.
 2. Recover the full artifact from its shared durable path; do not rely on a truncated inter-session message.
-3. Confirm the artifact names the expected page ID and prospect and contains exactly one `Deep Research` section plus Charities, Beverly Hills, Race/Run, Cancer, Personnel, and Other Background Context.
+3. Confirm the artifact names the expected page ID and prospect and contains exactly one `Contact Info` section, one `Deep Research` section plus Charities, Beverly Hills, Race/Run, Cancer, Personnel, and Other Background Context, and one `Citations` section holding a source table.
 4. Confirm meaningful claims carry direct links and the dossier contains no outreach, status mutation, or unsupported sensitive inference.
 5. Retry the same prospect after an incomplete or corrupt handoff; after the configured retry limit, record it as terminally blocked with the reason.
 
@@ -44,8 +44,8 @@ Complete this step only when the dossier passes validation or the record is term
 
 1. Use only the plugin-authorized Gateway action handshake with the protected NTC credential; never expose or forward the credential to McClintock.
 2. Read the live page before writing.
-3. Append `Deep Research` when absent; on rerun, replace only that section through the next H2 boundary while preserving unrelated content and properties.
-4. Read the page back and verify headings, citations, prospect identity, preserved content, and absence of duplicate `Deep Research` sections.
+3. Append `Contact Info`, `Deep Research`, and `Citations` when absent; on rerun, replace only those sections through their next H2 boundary while preserving unrelated content and properties.
+4. Read the page back and verify all three headings, citations table, prospect identity, preserved content, and absence of duplicate sections.
 5. After read-back passes, set `Status` to `Deep Research`; never change it after a failed or partial write.
 6. Persist the receipt, verification evidence, status confirmation, artifact hash/path, and completion timestamp.
 
@@ -64,18 +64,21 @@ Complete this step when the next selected record is active, the requested scope 
 
 ## Detached execution and reporting
 
-1. Run in Kranz's durable session and release the main conversation after admission; register completion watching or an equivalent continuation first.
-2. Bind detached continuation tool calls to the durable flow owner's session instead of the fresh scheduled-run session. Use the source-controlled deterministic bounded controller rather than a natural-language agent turn, and test that the first scheduled execution resolves the same TaskFlow and revision before promising unattended completion.
-3. Diagnose a stalled continuation in four layers: confirm the schedule fired, confirm the payload executed, confirm the execution context resolved the owner-scoped flow, then confirm completion or failure delivery reached its explicit destination. Treat `found: false` with a healthy owner-session lookup as a session-ownership mismatch, not lost flow data or workflow progress.
-4. Configure an explicit delivery channel and recipient for completion and failure reports, and ensure terminal `run_scope_complete` disables the continuation through an admitted scheduler-control path.
-5. If inter-session delivery reports an embedded tool-authority registration mismatch, stop retrying or resetting that route. Invoke the supported Gateway local agent runner against the same durable Kranz session, then require admission proof before saying the run is active.
-6. When a linked child appears active past its expected completion, inspect the child result and durable artifact directly. If the artifact is complete but the flow remains at `WAIT_RESEARCH`, reconcile the child handoff into the flow before retrying research or reporting completion.
-7. Report current-scope progress as `handled / selected` and queue progress as `verified / total`, plus blocked count and next entry.
-8. Send exceptions for retries, validation failures, protected-action failures, authentication or quota trouble, or human decisions; preserve the checkpoint.
-9. Send a final scope summary with selected and handled counts, verified and blocked totals, TaskFlow revision, and next queued record or terminal state.
-10. Say `running` only when an active linked task or scheduled continuation exists. Distinguish research complete, write complete, verified, checkpointed, and scope complete.
-11. Treat the Notion monitor as a human-readable projection, not the source of truth.
-12. Never perform outreach or infer permission to change statuses beyond the verified `Deep Research` transition.
+1. Keep schedules and watchdogs wake-only; protected Notion egress runs in a fresh admitted controller turn.
+2. Resume the exact TaskFlow revision and tick until the controller returns a revision-locked action. Execute that exact action through the Gateway protected executor, never the controller shell; verify it with `kranz_flow_execute_pending_action` at the same expected revision, then resume ticking.
+3. At dispatch, persist the child run/session identity and one tagged deadline watchdog. On completion, store the durable outcome, cancel the tag, and wake the controller immediately; let the watchdog fire only when the handoff is missing.
+4. Claim an LLM-free controller only after proving deterministic plugin admission. Otherwise use a minimal model-backed controller turn and state the limitation.
+5. Diagnose a stalled continuation in four layers: confirm the schedule or completion event fired, confirm the wake payload executed, confirm the admitted controller turn resolved the owner-scoped flow, then confirm protected execution and user-facing delivery. Treat `found: false` with a healthy owner-session lookup as a session-ownership mismatch.
+6. After changing the plugin or wake definition, inspect the plugin source, running Gateway start/version, and stored automation payload separately. A local path install needs no package reinstall, but restart the Gateway to replace its startup plugin snapshot and update or recreate stored payloads before proof.
+7. Separate tool exposure from protected-execution admission. If protected exec reports that secret egress lacks an admitted run instance, treat tool resolution as proven and move egress to a freshly admitted controller turn or repair admission propagation; do not expect tool-lookup rewrites to fix authority.
+8. If inter-session delivery reports an embedded tool-authority registration mismatch, stop retrying or resetting that route. Invoke the supported Gateway local agent runner against the same durable Kranz session, then require admission proof before saying the run is active.
+9. When a linked child appears active past its expected completion, inspect the child result and durable artifact directly. If the artifact is complete but the flow remains at `WAIT_RESEARCH`, reconcile the child handoff into the flow before retrying research or reporting completion.
+10. Report current-scope progress as `handled / selected` and queue progress as `verified / total`, plus blocked count and next entry.
+11. Send exceptions for retries, validation failures, protected-action failures, authentication or quota trouble, or human decisions; preserve the checkpoint.
+12. Send a final scope summary with selected and handled counts, verified and blocked totals, TaskFlow revision, and next queued record or terminal state.
+13. Say `running` only when an active linked task or scheduled continuation exists. Distinguish research complete, write complete, verified, checkpointed, and scope complete.
+14. Treat the Notion monitor as a human-readable projection, not the source of truth.
+15. Never perform outreach or infer permission to change statuses beyond the verified `Deep Research` transition.
 
 ## Audit and centralize workflow source
 

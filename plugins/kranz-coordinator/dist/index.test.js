@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import entry, { artifactPathFor, bindManagedFlows, buildControllerWakeMessage, deadlineHasExpired, inspectDossier, migrateNtcControllerState, outcomePathFor, pendingGatewayAction, prepareInitialState, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
+import entry, { artifactPathFor, bindManagedFlows, buildControllerWakeMessage, deadlineHasExpired, inspectDossier, migrateNtcControllerState, outcomePathFor, pendingGatewayAction, prepareInitialState, resolveControllerWakeTarget, resolvePathRoots, selectedPageIdsForRun } from "./index.js";
 import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,6 +42,20 @@ describe("kranz-coordinator", () => {
         };
         expect(() => bindManagedFlows(managedFlows, { sessionKey: "agent:kranz-coordinator:main" }, { ownerSessionKey: "agent:other:main" }))
             .toThrow("must be exactly agent:kranz-coordinator:main");
+    });
+    it("routes controller wakes separately from the durable Kranz flow owner", () => {
+        expect(resolveControllerWakeTarget({ ownerSessionKey: "agent:kranz-coordinator:main" })).toEqual({
+            sessionKey: "agent:kranz-coordinator:main",
+            agentId: "kranz-coordinator",
+        });
+        expect(resolveControllerWakeTarget({
+            ownerSessionKey: "agent:kranz-coordinator:main",
+            wakeSessionKey: "agent:ntc-controller:main",
+        })).toEqual({ sessionKey: "agent:ntc-controller:main", agentId: "ntc-controller" });
+    });
+    it("rejects arbitrary controller wake targets", () => {
+        expect(() => resolveControllerWakeTarget({ wakeSessionKey: "agent:main:main" }))
+            .toThrow("wakeSessionKey must be");
     });
     it("derives a deterministic artifact path", () => {
         expect(artifactPathFor({ position: 4, pageId: "3ddc9504-51fd-8122-83b4-f403ad4a8cad", name: "Guess Inc. (GUESS Foundation)" }))

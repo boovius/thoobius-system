@@ -31,12 +31,16 @@ const WRITER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-write-deep-
 const PAGE_READER_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-page-read.mjs";
 const MONITOR_SCRIPT = "/home/boovius/.openclaw/workspace/scripts/ntc-monitor-sync.mjs";
 const KRANZ_OWNER_SESSION_KEY = "agent:kranz-coordinator:main";
-const KRANZ_AGENT_ID = "kranz-coordinator";
+const NTC_CONTROLLER_SESSION_KEY = "agent:ntc-controller:main";
 
 const PluginConfigSchema = Type.Object({
   stateRoot: Type.Optional(Type.String({ description: "Shared NTC runtime-state root. Relative paths resolve from the shared workspace." })),
   artifactRoot: Type.Optional(Type.String({ description: "Durable research-artifact root. Defaults to <stateRoot>/artifacts." })),
   ownerSessionKey: Type.Optional(Type.Literal(KRANZ_OWNER_SESSION_KEY, { description: "Stable TaskFlow owner shared by Kranz main and scheduled callers." })),
+  wakeSessionKey: Type.Optional(Type.Union([
+    Type.Literal(KRANZ_OWNER_SESSION_KEY),
+    Type.Literal(NTC_CONTROLLER_SESSION_KEY),
+  ], { description: "Stable admitted controller session that receives completion and deadline wakes." })),
 }, { additionalProperties: false });
 
 const JsonText = Type.String({ description: "A JSON-encoded object used as the complete persisted TaskFlow state." });
@@ -50,7 +54,7 @@ const StartParameters = Type.Object({
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
 type ResearchOutcome = { status: "succeeded" | "failed"; runId: string; endedAt: string; error?: string };
-type PluginConfig = { stateRoot?: string; artifactRoot?: string; ownerSessionKey?: string };
+type PluginConfig = { stateRoot?: string; artifactRoot?: string; ownerSessionKey?: string; wakeSessionKey?: string };
 type GatewayAction = { kind: "read_page" | "publish_notion" | "sync_monitor"; script: string; args: string[]; env: Record<string, string> };
 type RunScope = { mode: "limited" | "all_remaining"; requestedEntries: number | null; selectedPageIds: string[]; handledPageIds: string[]; remainingPageIds: string[]; status: "active" | "complete"; startedAt: string; completedAt?: string };
 
@@ -112,6 +116,16 @@ export function bindManagedFlows<T, C>(
     throw new Error(`Kranz ownerSessionKey must be exactly ${KRANZ_OWNER_SESSION_KEY}`);
   }
   return managedFlows.bindSession({ sessionKey: ownerSessionKey });
+}
+
+export function resolveControllerWakeTarget(config: PluginConfig = {}): { sessionKey: string; agentId: string } {
+  const sessionKey = config.wakeSessionKey?.trim() || config.ownerSessionKey?.trim() || KRANZ_OWNER_SESSION_KEY;
+  if (sessionKey !== KRANZ_OWNER_SESSION_KEY && sessionKey !== NTC_CONTROLLER_SESSION_KEY) {
+    throw new Error(`Kranz wakeSessionKey must be ${KRANZ_OWNER_SESSION_KEY} or ${NTC_CONTROLLER_SESSION_KEY}`);
+  }
+  const [, agentId, lane, ...extra] = sessionKey.split(":");
+  if (!agentId || lane !== "main" || extra.length > 0) throw new Error(`Invalid controller wake session key: ${sessionKey}`);
+  return { sessionKey, agentId };
 }
 
 function resolveWorkspacePath(value: string | undefined, fallback: string): string {
@@ -540,12 +554,12 @@ export default defineToolPlugin({
               flow = flows.get(flowId)!;
               const waiting = flows.setWaiting({ flowId, expectedRevision: flow.revision, currentStep: Steps.WAIT_RESEARCH, stateJson: { ...state, child: { dispatchId, runId, childSessionKey, attempt, status: "running", startedAt: startedAt.toISOString(), outcomePath }, expectedArtifactPath: artifactPath, deadlineAt: watchdogAt, watchdogTag }, waitJson: { kind: "child_completion", childRunId: runId, childSessionKey, pageId: record.pageId, attempt, deadlineAt: watchdogAt, watchdogTag } });
               if (!waiting.applied) return result({ status: "revision_conflict", linked, mutation: waiting });
-              const ownerSessionKey = config.ownerSessionKey?.trim() || KRANZ_OWNER_SESSION_KEY;
+              const wakeTarget = resolveControllerWakeTarget(config);
               const childIdentity = { dispatchId, runId, childSessionKey, attempt };
               const deadlines = createSessionTurnDeadlinePort({
                 scheduler: api.session.workflow,
-                sessionKey: ownerSessionKey,
-                agentId: KRANZ_AGENT_ID,
+                sessionKey: wakeTarget.sessionKey,
+                agentId: wakeTarget.agentId,
                 messageForDeadline: () => buildControllerWakeMessage({ flowId, cause: "deadline", runId }),
               });
               await deadlines.schedule({ tag: watchdogTag, at: watchdogAt, flowId, child: childIdentity });
@@ -569,8 +583,8 @@ export default defineToolPlugin({
                 try {
                   await scheduleImmediateControllerWake({
                     scheduler: api.session.workflow,
-                    sessionKey: ownerSessionKey,
-                    agentId: KRANZ_AGENT_ID,
+                    sessionKey: wakeTarget.sessionKey,
+                    agentId: wakeTarget.agentId,
                     flowId,
                     child: childIdentity,
                     tag: `${watchdogTag}-${completionKind}`,

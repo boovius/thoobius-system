@@ -16,7 +16,8 @@ Runtime files default to the shared workflow directory `/home/boovius/.openclaw/
         "enabled": true,
         "config": {
           "stateRoot": "/home/boovius/.openclaw/workspace/.ntc-state",
-          "ownerSessionKey": "agent:kranz-coordinator:main"
+          "ownerSessionKey": "agent:kranz-coordinator:main",
+          "wakeSessionKey": "agent:ntc-controller:main"
         }
       }
     }
@@ -42,6 +43,8 @@ Before a requested run, call `kranz_flow_set_run_scope` with the exact flow revi
 `kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives and authorizes the current page read or verified publication from TaskFlow state, then verifies the resulting context or publication receipt after the protected Gateway executor runs the fixed script. `kranz_flow_sync_monitor` applies the same authorize/verify handshake to the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, or Notion operation from the model.
 
 `ownerSessionKey` binds both interactive Kranz calls and ephemeral scheduled calls to the same durable TaskFlow owner. The plugin accepts only the dedicated `agent:kranz-coordinator:main` owner, so callers cannot redirect it into arbitrary session namespaces. TaskFlow revision checks remain the concurrency guard when two callers race.
+
+`wakeSessionKey` independently selects the admitted session that receives child-completion and deadline wakes. During reversible cutover, the TaskFlow remains owned by `agent:kranz-coordinator:main` while wakes go to the least-privileged `agent:ntc-controller:main`. Omitting it preserves the legacy Kranz wake target.
 
 The event-driven path replaces recurring four-minute supervision. Dispatch creates one 20-minute session-turn watchdog tagged to the exact flow, record, and attempt. Normal child completion writes the durable outcome, cancels that watchdog, and schedules an immediate continuation in the stable controller session. If the completion handoff is lost, the watchdog wakes that same session once for reconciliation.
 
