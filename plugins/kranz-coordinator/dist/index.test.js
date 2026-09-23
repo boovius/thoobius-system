@@ -166,6 +166,7 @@ describe("kranz-coordinator", () => {
         expect(pendingGatewayAction({ currentStep: "WRITE_NOTION" }, state, roots)).toMatchObject({
             kind: "publish_notion",
             args: [pageId, artifact, path.join(stateRoot, "publication-receipts", `${pageId}.json`)],
+            artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         });
     });
 });

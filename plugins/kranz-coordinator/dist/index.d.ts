@@ -1,4 +1,5 @@
 import { type NtcPathRoots as PathRoots, type NtcQueueRecord as QueueRecord } from "./ntc-adapter.js";
+import { type NtcProtectedAction } from "./ntc-protected-executor.js";
 type JsonValue = null | boolean | number | string | JsonValue[] | {
     [key: string]: JsonValue;
 };
@@ -11,12 +12,7 @@ type PluginConfig = {
     ownerSessionKey?: string;
     wakeSessionKey?: string;
 };
-type GatewayAction = {
-    kind: "read_page" | "publish_notion" | "sync_monitor";
-    script: string;
-    args: string[];
-    env: Record<string, string>;
-};
+type GatewayAction = NtcProtectedAction;
 export declare function migrateNtcControllerState(state: JsonObject): {
     state: JsonObject;
     changed: boolean;

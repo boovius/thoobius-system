@@ -5,6 +5,7 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { createDeadlineTag, createDispatchId, deadlineAt, freezeRunScope, normalizeItemLimit, } from "@thoobius/workflow-controller-core";
 import { artifactPathFor as ntcArtifactPathFor, contextPathFor as ntcContextPathFor, inspectDossier, outcomePathFor as ntcOutcomePathFor, receiptPathFor as ntcReceiptPathFor, } from "./ntc-adapter.js";
 import { createSessionTurnDeadlinePort, scheduleImmediateControllerWake } from "./openclaw-supervision.js";
+import { issueNtcExecutionGrant } from "./ntc-protected-executor.js";
 const CONTROLLER_ID = "kranz/ntc-deep-research";
 const MCCLINTOCK_AGENT_ID = "mcclintock-deep-opus";
 const MAX_RESEARCH_ATTEMPTS = 2;
@@ -336,7 +337,7 @@ export function pendingGatewayAction(flow, state, roots) {
         const receiptPath = receiptPathFor(record, roots);
         if (readReceipt(receiptPath, record.pageId, artifact.sha256))
             return null;
-        return { kind: "publish_notion", script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } };
+        return { kind: "publish_notion", script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot }, artifactSha256: artifact.sha256 };
     }
     return null;
 }
@@ -660,8 +661,10 @@ export default defineToolPlugin({
                         const record = queue[Number(state.currentIndex ?? 0)];
                         if (!record)
                             return result({ status: "no_pending_action", flowId, revision: flow.revision, currentStep: flow.currentStep });
-                        if (action)
-                            return result({ status: "action_authorized", flowId, revision: flow.revision, currentStep: flow.currentStep, action });
+                        if (action) {
+                            const grant = issueNtcExecutionGrant({ flowId, revision: flow.revision, action, roots });
+                            return result({ status: "action_authorized", flowId, revision: flow.revision, currentStep: flow.currentStep, action: { kind: action.kind, actionId: grant.actionId, expiresAt: grant.expiresAt }, executor: { command: grant.command } });
+                        }
                         if (normalizeStep(flow.currentStep) === Steps.SELECT_RECORD) {
                             const context = readContext(contextPathFor(record, roots), record.pageId);
                             if (context.ok)
@@ -704,7 +707,8 @@ export default defineToolPlugin({
                         }
                         const base = monitorAction(flowId, roots);
                         const action = { kind: "sync_monitor", script: base.script, args: base.args, env: base.env };
-                        return result({ status: "action_authorized", flowId, revision: flow.revision, action });
+                        const grant = issueNtcExecutionGrant({ flowId, revision: flow.revision, action, roots });
+                        return result({ status: "action_authorized", flowId, revision: flow.revision, action: { kind: action.kind, actionId: grant.actionId, expiresAt: grant.expiresAt }, executor: { command: grant.command } });
                     } };
             },
         }),

@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+import { executeNtcExecutionGrant } from "../dist/ntc-protected-executor.js";
+
+const actionId = process.argv[2];
+if (!actionId || process.argv.length !== 3) {
+  process.stderr.write("Usage: ntc-notion-exec <action-id>\n");
+  process.exitCode = 2;
+} else {
+  try {
+    const receipt = executeNtcExecutionGrant({ actionId });
+    process.stdout.write(`${JSON.stringify(receipt)}\n`);
+    if (receipt.status !== "succeeded") process.exitCode = receipt.exitCode || 1;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : "NTC protected execution failed"}\n`);
+    process.exitCode = 1;
+  }
+}

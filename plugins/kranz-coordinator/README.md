@@ -40,7 +40,32 @@ Runtime files default to the shared workflow directory `/home/boovius/.openclaw/
 
 Before a requested run, call `kranz_flow_set_run_scope` with the exact flow revision. Supplying `itemLimit` selects the next N still-available page IDs in snapshot order; omitting it selects all remaining available IDs. `entryLimit` remains as a deprecated compatibility alias. The same tool accepts `triggerSource: "manual" | "scheduled"`; both paths freeze the identical durable run scope. Verified and terminally blocked records consume one selected slot, and the flow pauses at `run_scope_complete` when that exact selection is exhausted.
 
-`kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives and authorizes the current page read or verified publication from TaskFlow state, then verifies the resulting context or publication receipt after the protected Gateway executor runs the fixed script. `kranz_flow_sync_monitor` applies the same authorize/verify handshake to the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, or Notion operation from the model.
+`kranz_flow_execute_pending_action` accepts only a flow id and its exact revision. It derives the current page read or verified publication from TaskFlow state, validates every path and artifact hash, and issues a two-minute, one-use opaque action grant. The admitted controller turn runs the returned `ntc-notion-exec <actionId>` command through core Gateway `exec`; the wrapper atomically claims the grant, executes only the fixed script, and writes a sanitized result. A second tool call verifies the resulting context or publication receipt. `kranz_flow_sync_monitor` uses the same handshake for the human-readable Notion monitor. Neither tool accepts an arbitrary page, script, output path, request body, or Notion operation from the model.
+
+The controller needs this allowlisted Gateway execution lane in its agent entry (paths shown for the standard workspace):
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["kranz-coordinator", "exec"],
+    "exec": {
+      "host": "gateway",
+      "mode": "allowlist",
+      "pathPrepend": ["/home/boovius/.openclaw/workspace/plugins/kranz-coordinator/bin"],
+      "safeBins": ["ntc-notion-exec"],
+      "safeBinTrustedDirs": ["/home/boovius/.openclaw/workspace/plugins/kranz-coordinator/bin"],
+      "safeBinProfiles": {
+        "ntc-notion-exec": {
+          "minPositional": 1,
+          "maxPositional": 1
+        }
+      }
+    }
+  }
+}
+```
+
+Core `exec` must be created inside a newly admitted `ntc-controller` turn. Gateway then binds the run authority and injects the opaque `NTC_NOTION_API_KEY` sentinel only into that process, with egress restricted to `api.notion.com`. The plugin and controller never receive or log the underlying credential. Missing admission, an expired/consumed grant, a changed artifact, or any non-allowlisted argument fails closed.
 
 `ownerSessionKey` binds both interactive Kranz calls and ephemeral scheduled calls to the same durable TaskFlow owner. The plugin accepts only the dedicated `agent:kranz-coordinator:main` owner, so callers cannot redirect it into arbitrary session namespaces. TaskFlow revision checks remain the concurrency guard when two callers race.
 

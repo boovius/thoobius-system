@@ -20,6 +20,7 @@ import {
   type NtcQueueRecord as QueueRecord,
 } from "./ntc-adapter.js";
 import { createSessionTurnDeadlinePort, scheduleImmediateControllerWake } from "./openclaw-supervision.js";
+import { issueNtcExecutionGrant, type NtcProtectedAction } from "./ntc-protected-executor.js";
 
 const CONTROLLER_ID = "kranz/ntc-deep-research";
 const MCCLINTOCK_AGENT_ID = "mcclintock-deep-opus";
@@ -55,7 +56,7 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string
 type JsonObject = { [key: string]: JsonValue };
 type ResearchOutcome = { status: "succeeded" | "failed"; runId: string; endedAt: string; error?: string };
 type PluginConfig = { stateRoot?: string; artifactRoot?: string; ownerSessionKey?: string; wakeSessionKey?: string };
-type GatewayAction = { kind: "read_page" | "publish_notion" | "sync_monitor"; script: string; args: string[]; env: Record<string, string> };
+type GatewayAction = NtcProtectedAction;
 type RunScope = { mode: "limited" | "all_remaining"; requestedEntries: number | null; selectedPageIds: string[]; handledPageIds: string[]; remainingPageIds: string[]; status: "active" | "complete"; startedAt: string; completedAt?: string };
 
 const Steps = {
@@ -376,7 +377,7 @@ export function pendingGatewayAction(flow: { currentStep?: string }, state: Json
     if (!artifact.ok || !artifact.sha256) throw new Error(`Cannot publish invalid research artifact: ${artifact.errors.join(",")}`);
     const receiptPath = receiptPathFor(record, roots);
     if (readReceipt(receiptPath, record.pageId, artifact.sha256)) return null;
-    return { kind: "publish_notion", script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot } };
+    return { kind: "publish_notion", script: WRITER_SCRIPT, args: [record.pageId, artifactPath, receiptPath], env: { OPENCLAW_NOTION_PROFILE: "ntc", NTC_STATE_ROOT: roots.stateRoot }, artifactSha256: artifact.sha256 };
   }
   return null;
 }
@@ -665,7 +666,10 @@ export default defineToolPlugin({
             const queue = queueFrom(state);
             const record = queue[Number(state.currentIndex ?? 0)];
             if (!record) return result({ status: "no_pending_action", flowId, revision: flow.revision, currentStep: flow.currentStep });
-            if (action) return result({ status: "action_authorized", flowId, revision: flow.revision, currentStep: flow.currentStep, action });
+            if (action) {
+              const grant = issueNtcExecutionGrant({ flowId, revision: flow.revision, action, roots });
+              return result({ status: "action_authorized", flowId, revision: flow.revision, currentStep: flow.currentStep, action: { kind: action.kind, actionId: grant.actionId, expiresAt: grant.expiresAt }, executor: { command: grant.command } });
+            }
             if (normalizeStep(flow.currentStep) === Steps.SELECT_RECORD) {
               const context = readContext(contextPathFor(record, roots), record.pageId);
               if (context.ok) return result({ status: "action_complete", action: "read_page", flowId, revision: flow.revision, pageId: record.pageId, outputPath: contextPathFor(record, roots), readAt: context.readAt ?? null });
@@ -703,7 +707,8 @@ export default defineToolPlugin({
             }
             const base = monitorAction(flowId, roots);
             const action: GatewayAction = { kind: "sync_monitor", script: base.script, args: base.args, env: base.env };
-            return result({ status: "action_authorized", flowId, revision: flow.revision, action });
+            const grant = issueNtcExecutionGrant({ flowId, revision: flow.revision, action, roots });
+            return result({ status: "action_authorized", flowId, revision: flow.revision, action: { kind: action.kind, actionId: grant.actionId, expiresAt: grant.expiresAt }, executor: { command: grant.command } });
           } };
       },
     }),
